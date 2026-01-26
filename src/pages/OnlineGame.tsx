@@ -202,8 +202,17 @@ const OnlineGame = () => {
     const logEndRef = useRef<HTMLDivElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
 
-    const p1Profile = PLAYER_COLORS.find(c => c.id === (lobbyState.p1?.colorId ?? 0)) || PLAYER_COLORS[0];
-    const p2Profile = PLAYER_COLORS.find(c => c.id === (lobbyState.p2?.colorId ?? 1)) || PLAYER_COLORS[1];
+    // FIX: Stabilize colors using Ref to prevent flicker during sync
+    const p1ColorRef = useRef<number>(0);
+    const p2ColorRef = useRef<number>(1);
+
+    useEffect(() => {
+        if (lobbyState.p1 && lobbyState.p1.colorId !== undefined) p1ColorRef.current = lobbyState.p1.colorId;
+        if (lobbyState.p2 && lobbyState.p2.colorId !== undefined) p2ColorRef.current = lobbyState.p2.colorId;
+    }, [lobbyState]);
+
+    const p1Profile = PLAYER_COLORS.find(c => c.id === p1ColorRef.current) || PLAYER_COLORS[0];
+    const p2Profile = PLAYER_COLORS.find(c => c.id === p2ColorRef.current) || PLAYER_COLORS[1];
     
     const P1_LABEL = lobbyState.p1?.nickname || "PLAYER 1";
     const P2_LABEL = lobbyState.p2?.nickname || "PLAYER 2";
@@ -655,6 +664,12 @@ const OnlineGame = () => {
                     logs
                 }
             });
+            
+            // FIX: Draw Card Request if hand is not full
+            if (myHand.length < MAX_HAND_SIZE) {
+                console.log("Requesting card draw...");
+                socketRef.current.emit('draw_card_req', { roomId: roomIdParam });
+            }
         }
         
         setIsProcessingTurn(false);
