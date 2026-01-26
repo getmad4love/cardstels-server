@@ -242,10 +242,7 @@ io.on('connection', (socket) => {
       if (newState.p2Stats) room.p2Stats = newState.p2Stats;
       if (newState.turn) room.turn = newState.turn;
       
-      // If a card was played, we assume client managed their hand locally for speed,
-      // but in a strict server we'd validate. Here we just sync.
-      
-      // Broadcast to all
+      // Broadcast to all (including sender to force sync)
       io.to(roomId).emit('state_sync', {
           p1Stats: room.p1Stats,
           p2Stats: room.p2Stats,
@@ -265,8 +262,8 @@ io.on('connection', (socket) => {
       // Send card ONLY to requester
       socket.emit('card_drawn', { card });
       
-      // Tell opponent deck count changed
-      socket.broadcast.to(roomId).emit('deck_count_update', room.mainDeck.length);
+      // Tell everyone deck count changed
+      io.to(roomId).emit('deck_count_update', room.mainDeck.length);
   });
 
   socket.on('disconnect', () => {
