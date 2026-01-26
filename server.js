@@ -53,7 +53,7 @@ io.on('connection', (socket) => {
     
     rooms[roomId] = {
       id: roomId,
-      p1: { id: socket.id, nickname: nickname || 'PLAYER 1', colorId: colorId || 0, isReady: false, role: 'p1', wantsRematch: false },
+      p1: { id: socket.id, nickname: nickname || 'PLAYER 1', colorId: colorId || 0, isReady: false, role: 'p1' },
       p2: null,
       gameState: 'LOBBY', 
       p1Stats: null,
@@ -61,8 +61,7 @@ io.on('connection', (socket) => {
       p1KingCards: [], 
       p2KingCards: [],
       turn: 'p1',
-      mainDeck: [],
-      kingDeck: []
+      rematch: { p1: false, p2: false }
     };
     
     socket.emit('room_created', roomId);
@@ -87,7 +86,7 @@ io.on('connection', (socket) => {
     let finalColor = colorId || 1;
     if (room.p1 && room.p1.colorId === finalColor) finalColor = (finalColor + 1) % 8;
 
-    room.p2 = { id: socket.id, nickname: nickname || 'PLAYER 2', colorId: finalColor, isReady: false, role: 'p2', wantsRematch: false };
+    room.p2 = { id: socket.id, nickname: nickname || 'PLAYER 2', colorId: finalColor, isReady: false, role: 'p2' };
     io.to(roomId).emit('lobby_update', { p1: room.p1, p2: room.p2 });
   });
 
@@ -121,7 +120,7 @@ io.on('connection', (socket) => {
       }
   });
 
-  // --- GAME LOGIC ---
+  // --- GAME LOGIC (RELAY ONLY) ---
 
   socket.on('init_game_setup', ({ roomId, kingDeck, mainDeck, initialStats }) => {
       const room = rooms[roomId];
@@ -136,9 +135,6 @@ io.on('connection', (socket) => {
           room.p1KingCards = []; 
           room.p2KingCards = [];
           
-          if(room.p1) room.p1.wantsRematch = false;
-          if(room.p2) room.p2.wantsRematch = false;
-
           const options = room.kingDeck.slice(0, 3);
           
           io.to(roomId).emit('king_selection_update', {
@@ -159,6 +155,7 @@ io.on('connection', (socket) => {
       const isP1 = room.p1 && room.p1.id === socket.id;
       
       if (isP1) {
+          // P1 Selected
           room.p1KingCards.push(card); 
           room.kingDeck = room.kingDeck.filter(c => c.id !== card.id);
           room.kingDeck = shuffle(room.kingDeck);
@@ -172,6 +169,7 @@ io.on('connection', (socket) => {
               p2Kings: []
           });
       } else {
+          // P2 Selected -> Start Game
           room.p2KingCards.push(card); 
           
           io.to(roomId).emit('king_selection_update', {
@@ -181,6 +179,7 @@ io.on('connection', (socket) => {
               p2Kings: room.p2KingCards 
           });
 
+          // Trigger Deal
           setTimeout(() => {
               const p1Hand = [];
               const p2Hand = [];
@@ -194,6 +193,8 @@ io.on('connection', (socket) => {
               for(let k=0; k<4; k++) room.mainDeck.push({ ...kp, uniqueId: Math.random().toString() });
               room.mainDeck = shuffle(room.mainDeck);
               
+              room.turn = 'p1';
+
               io.to(roomId).emit('start_dealing_sequence', {
                   p1Stats: room.p1Stats,
                   p2Stats: room.p2Stats,
@@ -208,29 +209,23 @@ io.on('connection', (socket) => {
       }
   });
 
-  socket.on('activate_king_power', ({ roomId, p1Card, p2Card }) => {
-      io.to(roomId).emit('king_power_triggered', { p1Card, p2Card });
-      const room = rooms[roomId];
-      if (room) {
-          room.p1KingCards.push(p1Card);
-          room.p2KingCards.push(p2Card);
-      }
-  });
-
   socket.on('game_action', ({ roomId, action, payload }) => {
       const room = rooms[roomId];
       if (!room) return;
 
+      // Update server state for reconnects
       if (payload.newP1Stats) room.p1Stats = payload.newP1Stats;
       if (payload.newP2Stats) room.p2Stats = payload.newP2Stats;
       
       if (action === 'PLAY_CARD' || action === 'DISCARD_CARD') {
+          // Recycle
           if (payload.card) {
              room.mainDeck.push({ ...payload.card, uniqueId: Math.random().toString() });
           }
       }
       
       if (action === 'END_TURN') {
+          // Flip turn *before* broadcasting state sync
           room.turn = (room.turn === 'p1' ? 'p2' : 'p1');
       }
 
@@ -251,33 +246,47 @@ io.on('connection', (socket) => {
       if(!room) return;
       
       const isP1 = room.p1.id === socket.id;
-      const playerRole = isP1 ? 'p1' : 'p2';
+      const requestorRole = isP1 ? 'p1' : 'p2';
       
+      // Allow draw if deck has cards. 
+      // Removed rigid turn check to allow start-of-turn drawing via client logic if needed,
+      // but ideally client only requests when it IS their turn or end of turn.
       if (room.mainDeck.length > 0) {
           const card = room.mainDeck.shift();
-          // Sending 'player_drew' allows us to animate specifically based on role
-          io.to(roomId).emit('player_drew', { card, role: playerRole });
+          
+          // Send card ONLY to the player who drew
+          socket.emit('player_drew', { card, role: requestorRole });
+          
+          // Tell opponent that a card was drawn (but not which one)
+          socket.broadcast.to(roomId).emit('player_drew', { card: null, role: requestorRole });
+          
           io.to(roomId).emit('deck_count_update', room.mainDeck.length);
       }
   });
+  
+  socket.on('activate_king_power', ({ roomId, p1Card, p2Card }) => {
+      io.to(roomId).emit('king_power_triggered', { p1Card, p2Card });
+  });
 
-  // Rematch Logic
   socket.on('request_rematch', ({ roomId }) => {
       const room = rooms[roomId];
       if (!room) return;
       
-      if (room.p1 && room.p1.id === socket.id) room.p1.wantsRematch = true;
-      if (room.p2 && room.p2.id === socket.id) room.p2.wantsRematch = true;
-
-      // Broadcast who wants a rematch
-      io.to(roomId).emit('rematch_update', { 
-          p1: room.p1 ? room.p1.wantsRematch : false, 
-          p2: room.p2 ? room.p2.wantsRematch : false 
-      });
-
-      if (room.p1 && room.p1.wantsRematch && room.p2 && room.p2.wantsRematch) {
-          // Both ready -> Reset game but keep connection
+      if (room.p1.id === socket.id) room.rematch.p1 = true;
+      if (room.p2.id === socket.id) room.rematch.p2 = true;
+      
+      io.to(roomId).emit('rematch_update', room.rematch);
+      
+      if (room.rematch.p1 && room.rematch.p2) {
+          // Both ready -> Reset Logic
           io.to(roomId).emit('game_restart');
+          
+          // Trigger King Selection again
+          // Need fresh decks ideally, or re-shuffle existing?
+          // For simplicity, we re-emit the King Selection Start event if we have the deck.
+          // In a real app, we'd regenerate the deck on server or ask P1 to re-init.
+          // Here, we'll tell P1 to re-init via 'game_restart' handling on client.
+          room.rematch = { p1: false, p2: false };
       }
   });
 
