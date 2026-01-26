@@ -75,7 +75,10 @@ io.on('connection', (socket) => {
     else if (room.p2 && room.p2.id === socket.id) target = room.p2;
 
     if (target) {
-        target.nickname = nickname.substring(0, 12).toUpperCase(); // Increased length slightly
+        // Allow mixed case for nicknames if desired, or keep uppercase. 
+        // User requested Chat mixed case, but usually nicknames are caps in this game style.
+        // Keeping nicknames uppercase for consistency with UI, chat will be mixed.
+        target.nickname = nickname.substring(0, 12).toUpperCase(); 
         target.colorId = colorId;
         io.to(roomId).emit('lobby_update', room);
     }
