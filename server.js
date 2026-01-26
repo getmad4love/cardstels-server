@@ -30,7 +30,7 @@ io.on('connection', (socket) => {
     socket.join(roomId);
     
     rooms[roomId] = {
-      p1: { id: socket.id, nickname: 'HRÁČ 1', colorId: 0, isReady: false, role: 'p1' },
+      p1: { id: socket.id, nickname: 'PLAYER 1', colorId: 0, isReady: false, role: 'p1' },
       p2: null,
       gameStarted: false,
       deckData: null
@@ -60,7 +60,7 @@ io.on('connection', (socket) => {
     let p2Color = 1;
     if (room.p1.colorId === 1) p2Color = 0;
 
-    room.p2 = { id: socket.id, nickname: 'HRÁČ 2', colorId: p2Color, isReady: false, role: 'p2' };
+    room.p2 = { id: socket.id, nickname: 'PLAYER 2', colorId: p2Color, isReady: false, role: 'p2' };
     
     console.log(`Uživatel ${socket.id} vstoupil do ${roomId}`);
     io.to(roomId).emit('lobby_update', room);
@@ -75,7 +75,7 @@ io.on('connection', (socket) => {
     else if (room.p2 && room.p2.id === socket.id) target = room.p2;
 
     if (target) {
-        target.nickname = nickname.substring(0, 8).toUpperCase();
+        target.nickname = nickname.substring(0, 12).toUpperCase(); // Increased length slightly
         target.colorId = colorId;
         io.to(roomId).emit('lobby_update', room);
     }
