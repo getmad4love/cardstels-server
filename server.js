@@ -61,7 +61,7 @@ io.on('connection', (socket) => {
       p1KingCards: [], // Initialize empty arrays for King Cards
       p2KingCards: [],
       turn: 'p1',
-      mainDeck: [],
+      mainDeck: [], // Store main deck here
       kingDeck: []
     };
     
@@ -135,7 +135,6 @@ io.on('connection', (socket) => {
           room.p2Stats = { ...initialStats };
           room.p1KingCards = []; // Reset King Cards
           room.p2KingCards = [];
-          room.turn = 'p1';
           
           const options = room.kingDeck.slice(0, 3);
           
@@ -215,29 +214,39 @@ io.on('connection', (socket) => {
       const room = rooms[roomId];
       if (!room) return;
 
+      const isP1 = room.p1 && room.p1.id === socket.id;
+      const role = isP1 ? 'p1' : 'p2';
+
+      // --- CRITICAL FIX: TURN VALIDATION ---
+      // Only the player whose turn it is can END_TURN
+      if (action === 'END_TURN' && room.turn !== role) {
+          console.warn(`[CHEAT PREVENTED] ${role} tried to END_TURN during ${room.turn}'s turn.`);
+          return; // Ignore valid request
+      }
+
       // Update server state for reconnects
-      if (payload.newP1Stats) room.p1Stats = payload.newP1Stats;
-      if (payload.newP2Stats) room.p2Stats = payload.newP2Stats;
+      if (payload && payload.newP1Stats) room.p1Stats = payload.newP1Stats;
+      if (payload && payload.newP2Stats) room.p2Stats = payload.newP2Stats;
       
+      // Handle card recycling
       if (action === 'PLAY_CARD' || action === 'DISCARD_CARD') {
-          // Recycle
-          if (payload.card) {
+          if (payload && payload.card) {
              room.mainDeck.push({ ...payload.card, uniqueId: Math.random().toString() });
           }
       }
       
-      // FIX: Update turn BEFORE emitting state sync to ensure everyone gets the new turn value
+      // Handle turn switching
       if (action === 'END_TURN') {
           room.turn = (room.turn === 'p1' ? 'p2' : 'p1');
       }
-
+      
       io.to(roomId).emit('state_sync', {
-          p1Stats: payload.newP1Stats,
-          p2Stats: payload.newP2Stats,
-          turn: room.turn, // Now correctly updated
+          p1Stats: room.p1Stats,
+          p2Stats: room.p2Stats,
+          turn: room.turn,
           deckCount: room.mainDeck.length,
-          event: { type: action, cardId: payload.card?.id, player: (room.p1.id === socket.id ? 'p1' : 'p2') },
-          logs: payload.logs,
+          event: { type: action, cardId: payload?.card?.id, player: role },
+          logs: payload?.logs,
           p1Nickname: room.p1 ? room.p1.nickname : "PLAYER 1",
           p2Nickname: room.p2 ? room.p2.nickname : "PLAYER 2"
       });
@@ -246,41 +255,24 @@ io.on('connection', (socket) => {
   socket.on('draw_card_req', ({ roomId }) => {
       const room = rooms[roomId];
       if(!room) return;
-      const isP1 = room.p1 && room.p1.id === socket.id;
+      const isP1 = room.p1.id === socket.id;
       const role = isP1 ? 'p1' : 'p2';
       
       if (room.mainDeck.length > 0) {
           const card = room.mainDeck.shift();
-          
-          // Send specific card to the person who drew
+          // Send specific card to the drawer
           socket.emit('player_drew', { card, role });
-          
-          // Send generic "animation" event to the opponent (so they see card fly but not face)
-          socket.to(roomId).emit('player_drew', { card: null, role });
+          // Notify other player that a card was drawn (hidden)
+          socket.broadcast.to(roomId).emit('player_drew', { card: null, role });
           
           io.to(roomId).emit('deck_count_update', room.mainDeck.length);
       }
   });
 
-  socket.on('activate_king_power', ({ roomId, p1Card, p2Card }) => {
-      io.to(roomId).emit('king_power_triggered', { p1Card, p2Card });
-  });
-
-  socket.on('request_rematch', ({ roomId }) => {
+  socket.on('chat_message', ({ roomId, message, color }) => {
       const room = rooms[roomId];
       if (!room) return;
-      
-      if (socket.id === room.p1.id) room.rematchP1 = true;
-      if (socket.id === room.p2.id) room.rematchP2 = true;
-      
-      io.to(roomId).emit('rematch_update', { p1: !!room.rematchP1, p2: !!room.rematchP2 });
-      
-      if (room.rematchP1 && room.rematchP2) {
-          room.rematchP1 = false;
-          room.rematchP2 = false;
-          // Trigger restart
-          io.to(roomId).emit('game_restart');
-      }
+      io.to(roomId).emit('chat_message', { text: message.substring(0, 32), senderId: socket.id, color });
   });
 
   socket.on('disconnect', () => {
