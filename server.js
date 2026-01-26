@@ -58,10 +58,11 @@ io.on('connection', (socket) => {
       gameState: 'LOBBY', 
       p1Stats: null,
       p2Stats: null,
-      p1KingCards: [], 
+      p1KingCards: [], // Initialize empty arrays for King Cards
       p2KingCards: [],
       turn: 'p1',
-      rematch: { p1: false, p2: false }
+      mainDeck: [],
+      kingDeck: []
     };
     
     socket.emit('room_created', roomId);
@@ -129,14 +130,16 @@ io.on('connection', (socket) => {
       try {
           room.gameState = 'KING_SELECTION';
           room.kingDeck = shuffle([...kingDeck]);
-          room.mainDeck = shuffle([...mainDeck]); 
+          room.mainDeck = shuffle([...mainDeck]); // STORE MAIN DECK
           room.p1Stats = { ...initialStats };
           room.p2Stats = { ...initialStats };
-          room.p1KingCards = []; 
+          room.p1KingCards = []; // Reset King Cards
           room.p2KingCards = [];
+          room.turn = 'p1';
           
           const options = room.kingDeck.slice(0, 3);
           
+          // Notify clients to start selection
           io.to(roomId).emit('king_selection_update', {
               phase: 'P1_CHOOSING',
               options: options,
@@ -156,7 +159,7 @@ io.on('connection', (socket) => {
       
       if (isP1) {
           // P1 Selected
-          room.p1KingCards.push(card); 
+          room.p1KingCards.push(card); // Store P1 King Card
           room.kingDeck = room.kingDeck.filter(c => c.id !== card.id);
           room.kingDeck = shuffle(room.kingDeck);
           const options = room.kingDeck.slice(0, 3);
@@ -170,7 +173,7 @@ io.on('connection', (socket) => {
           });
       } else {
           // P2 Selected -> Start Game
-          room.p2KingCards.push(card); 
+          room.p2KingCards.push(card); // Store P2 King Card
           
           io.to(roomId).emit('king_selection_update', {
               phase: 'DONE',
@@ -193,8 +196,6 @@ io.on('connection', (socket) => {
               for(let k=0; k<4; k++) room.mainDeck.push({ ...kp, uniqueId: Math.random().toString() });
               room.mainDeck = shuffle(room.mainDeck);
               
-              room.turn = 'p1';
-
               io.to(roomId).emit('start_dealing_sequence', {
                   p1Stats: room.p1Stats,
                   p2Stats: room.p2Stats,
@@ -202,6 +203,7 @@ io.on('connection', (socket) => {
                   deckCount: room.mainDeck.length,
                   p1Nickname: room.p1.nickname,
                   p2Nickname: room.p2.nickname,
+                  // IMPORTANT: Send King Cards back to confirm state
                   p1Kings: room.p1KingCards,
                   p2Kings: room.p2KingCards
               });
@@ -224,15 +226,15 @@ io.on('connection', (socket) => {
           }
       }
       
+      // FIX: Update turn BEFORE emitting state sync to ensure everyone gets the new turn value
       if (action === 'END_TURN') {
-          // Flip turn *before* broadcasting state sync
           room.turn = (room.turn === 'p1' ? 'p2' : 'p1');
       }
 
       io.to(roomId).emit('state_sync', {
           p1Stats: payload.newP1Stats,
           p2Stats: payload.newP2Stats,
-          turn: room.turn,
+          turn: room.turn, // Now correctly updated
           deckCount: room.mainDeck.length,
           event: { type: action, cardId: payload.card?.id, player: (room.p1.id === socket.id ? 'p1' : 'p2') },
           logs: payload.logs,
@@ -244,26 +246,22 @@ io.on('connection', (socket) => {
   socket.on('draw_card_req', ({ roomId }) => {
       const room = rooms[roomId];
       if(!room) return;
+      const isP1 = room.p1 && room.p1.id === socket.id;
+      const role = isP1 ? 'p1' : 'p2';
       
-      const isP1 = room.p1.id === socket.id;
-      const requestorRole = isP1 ? 'p1' : 'p2';
-      
-      // Allow draw if deck has cards. 
-      // Removed rigid turn check to allow start-of-turn drawing via client logic if needed,
-      // but ideally client only requests when it IS their turn or end of turn.
       if (room.mainDeck.length > 0) {
           const card = room.mainDeck.shift();
           
-          // Send card ONLY to the player who drew
-          socket.emit('player_drew', { card, role: requestorRole });
+          // Send specific card to the person who drew
+          socket.emit('player_drew', { card, role });
           
-          // Tell opponent that a card was drawn (but not which one)
-          socket.broadcast.to(roomId).emit('player_drew', { card: null, role: requestorRole });
+          // Send generic "animation" event to the opponent (so they see card fly but not face)
+          socket.to(roomId).emit('player_drew', { card: null, role });
           
           io.to(roomId).emit('deck_count_update', room.mainDeck.length);
       }
   });
-  
+
   socket.on('activate_king_power', ({ roomId, p1Card, p2Card }) => {
       io.to(roomId).emit('king_power_triggered', { p1Card, p2Card });
   });
@@ -272,21 +270,16 @@ io.on('connection', (socket) => {
       const room = rooms[roomId];
       if (!room) return;
       
-      if (room.p1.id === socket.id) room.rematch.p1 = true;
-      if (room.p2.id === socket.id) room.rematch.p2 = true;
+      if (socket.id === room.p1.id) room.rematchP1 = true;
+      if (socket.id === room.p2.id) room.rematchP2 = true;
       
-      io.to(roomId).emit('rematch_update', room.rematch);
+      io.to(roomId).emit('rematch_update', { p1: !!room.rematchP1, p2: !!room.rematchP2 });
       
-      if (room.rematch.p1 && room.rematch.p2) {
-          // Both ready -> Reset Logic
+      if (room.rematchP1 && room.rematchP2) {
+          room.rematchP1 = false;
+          room.rematchP2 = false;
+          // Trigger restart
           io.to(roomId).emit('game_restart');
-          
-          // Trigger King Selection again
-          // Need fresh decks ideally, or re-shuffle existing?
-          // For simplicity, we re-emit the King Selection Start event if we have the deck.
-          // In a real app, we'd regenerate the deck on server or ask P1 to re-init.
-          // Here, we'll tell P1 to re-init via 'game_restart' handling on client.
-          room.rematch = { p1: false, p2: false };
       }
   });
 
