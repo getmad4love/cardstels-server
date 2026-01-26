@@ -252,12 +252,15 @@ io.on('connection', (socket) => {
   socket.on('draw_card_req', ({ roomId }) => {
       const room = rooms[roomId];
       if(!room) return;
+      
+      // Determine which player is drawing based on socket ID
       const isP1 = room.p1.id === socket.id;
+      const playerRole = isP1 ? 'p1' : 'p2';
       
       if (room.mainDeck.length > 0) {
           const card = room.mainDeck.shift();
-          socket.emit('card_drawn', { card });
-          socket.broadcast.to(roomId).emit('opponent_drew_card');
+          // Emit specific event for who drew
+          io.to(roomId).emit('player_drew', { card, role: playerRole });
           io.to(roomId).emit('deck_count_update', room.mainDeck.length);
       }
   });
