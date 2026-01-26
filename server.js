@@ -229,7 +229,10 @@ io.on('connection', (socket) => {
           turn: action === 'END_TURN' ? (room.turn === 'p1' ? 'p2' : 'p1') : room.turn,
           deckCount: room.mainDeck.length,
           event: { type: action, cardId: payload.card?.id, player: (room.p1.id === socket.id ? 'p1' : 'p2') },
-          logs: payload.logs
+          logs: payload.logs,
+          // CRITICAL FIX: Send names to keep clients synced if they refresh
+          p1Nickname: room.p1 ? room.p1.nickname : "PLAYER 1",
+          p2Nickname: room.p2 ? room.p2.nickname : "PLAYER 2"
       });
       
       if (action === 'END_TURN') {
