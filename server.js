@@ -17,11 +17,13 @@ const io = new Server(server, {
 
 const rooms = {};
 
-// Helper to shuffle array
+// Helper to shuffle array (Fisher-Yates)
 const shuffle = (array) => {
-    for (let i = array.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [array[i], array[j]] = [array[j], array[i]];
+    let currentIndex = array.length, randomIndex;
+    while (currentIndex !== 0) {
+        randomIndex = Math.floor(Math.random() * currentIndex);
+        currentIndex--;
+        [array[currentIndex], array[randomIndex]] = [array[randomIndex], array[currentIndex]];
     }
     return array;
 };
@@ -42,8 +44,8 @@ io.on('connection', (socket) => {
       p1: { id: socket.id, nickname: nickname || 'PLAYER 1', colorId: colorId || 0, isReady: false, role: 'p1' },
       p2: null,
       gameState: 'LOBBY', 
-      deck: [],
-      kingDeck: [], // For king selection
+      mainDeck: [],
+      kingDeck: [],
       p1Hand: [],
       p2Hand: [],
       p1KingCards: [],
@@ -51,7 +53,12 @@ io.on('connection', (socket) => {
       p1Stats: null,
       p2Stats: null,
       turn: 'p1',
-      turnCount: 1
+      turnCount: 1,
+      // King Selection specific state
+      kingSelection: {
+          phase: 'IDLE', // IDLE, P1_CHOOSING, P2_CHOOSING, DONE
+          availableOptions: [] 
+      }
     };
     
     socket.emit('room_created', roomId);
@@ -71,7 +78,6 @@ io.on('connection', (socket) => {
 
     socket.join(roomId);
     
-    // Ensure distinct color if conflict
     let finalColor = colorId || 1;
     if (room.p1.colorId === finalColor) finalColor = (finalColor + 1) % 8;
 
@@ -91,7 +97,6 @@ io.on('connection', (socket) => {
       if (target) {
           if (nickname) target.nickname = nickname.substring(0, 12).toUpperCase();
           if (colorId !== undefined) target.colorId = colorId;
-          // Reset ready status on change to prevent abuse
           target.isReady = false; 
           io.to(roomId).emit('lobby_update', { p1: room.p1, p2: room.p2 });
       }
@@ -124,63 +129,106 @@ io.on('connection', (socket) => {
       }
   });
 
-  // --- GAME START & KING SELECTION ---
+  // --- GAME START & KING SELECTION FLOW ---
 
-  socket.on('init_king_selection', ({ roomId, kingDeck }) => {
+  socket.on('init_game_setup', ({ roomId, kingDeck, mainDeck, initialStats }) => {
       const room = rooms[roomId];
       if (!room) return;
-      
-      // Host starts this
+      if (room.p1.id !== socket.id) return; // Only host
+
+      // 1. Setup Data
       room.gameState = 'KING_SELECTION';
-      room.kingDeck = shuffle(kingDeck);
-      
-      io.to(roomId).emit('king_selection_start', {
-          deck: room.kingDeck
-      });
-  });
-
-  socket.on('king_selected', ({ roomId, card, role, remainingDeck }) => {
-      const room = rooms[roomId];
-      if (!room) return;
-
-      if (role === 'p1') {
-          room.p1KingCards.push(card);
-          room.kingDeck = remainingDeck; // Update deck after P1 draw
-      } else {
-          room.p2KingCards.push(card);
-          // End of selection
-      }
-
-      // Broadcast selection event so clients update UI
-      io.to(roomId).emit('king_card_chosen', { card, role, remainingDeck });
-  });
-
-  socket.on('start_main_game', ({ roomId, initialDeck, initialStats }) => {
-      const room = rooms[roomId];
-      if (!room) return;
-
-      room.gameState = 'PLAYING';
-      room.deck = shuffle([...initialDeck]);
+      room.mainDeck = shuffle([...mainDeck]); // Server authoritative shuffle of main deck
+      room.kingDeck = shuffle([...kingDeck]); // Server authoritative shuffle of king deck
       room.p1Stats = { ...initialStats };
       room.p2Stats = { ...initialStats };
       
-      // Deal Hands (6 cards each)
-      room.p1Hand = room.deck.splice(0, 6);
-      room.p2Hand = room.deck.splice(0, 6);
-      
-      room.turn = 'p1';
-      room.turnCount = 1;
+      // 2. Start P1 Selection
+      // Deal 3 cards for P1 to choose from
+      const options = room.kingDeck.slice(0, 3);
+      room.kingSelection = {
+          phase: 'P1_CHOOSING',
+          availableOptions: options
+      };
 
-      io.to(roomId).emit('game_started_final', {
-          p1Stats: room.p1Stats,
-          p2Stats: room.p2Stats,
-          turn: room.turn,
-          deckCount: room.deck.length
+      // Broadcast to everyone that King Selection started
+      io.to(roomId).emit('king_selection_update', {
+          phase: 'P1_CHOOSING',
+          options: options, // Clients will filter visibility based on their role
+          p1Kings: [],
+          p2Kings: []
       });
-      
-      // Send private hands
-      if (room.p1) io.to(room.p1.id).emit('hand_deal', room.p1Hand);
-      if (room.p2) io.to(room.p2.id).emit('hand_deal', room.p2Hand);
+  });
+
+  socket.on('select_king_card', ({ roomId, card }) => {
+      const room = rooms[roomId];
+      if (!room) return;
+
+      const isP1 = room.p1.id === socket.id;
+      const isP2 = room.p2.id === socket.id;
+
+      if (isP1 && room.kingSelection.phase === 'P1_CHOOSING') {
+          // P1 Selected
+          room.p1KingCards.push(card);
+          
+          // Remove selected card from deck
+          room.kingDeck = room.kingDeck.filter(c => c.id !== card.id);
+          
+          // CRITICAL: Reshuffle remaining king deck before P2 draws
+          room.kingDeck = shuffle(room.kingDeck);
+          
+          // Prepare P2 Options
+          const options = room.kingDeck.slice(0, 3);
+          room.kingSelection = {
+              phase: 'P2_CHOOSING',
+              availableOptions: options
+          };
+
+          io.to(roomId).emit('king_selection_update', {
+              phase: 'P2_CHOOSING',
+              options: options,
+              lastSelected: { card, player: 'p1' }, // For visual feedback
+              p1Kings: room.p1KingCards,
+              p2Kings: room.p2KingCards
+          });
+
+      } else if (isP2 && room.kingSelection.phase === 'P2_CHOOSING') {
+          // P2 Selected
+          room.p2KingCards.push(card);
+          
+          // Clean up king deck (not strictly necessary if game starts, but good for endless logic)
+          room.kingDeck = room.kingDeck.filter(c => c.id !== card.id);
+          
+          io.to(roomId).emit('king_selection_update', {
+              phase: 'DONE',
+              lastSelected: { card, player: 'p2' },
+              p1Kings: room.p1KingCards,
+              p2Kings: room.p2KingCards
+          });
+
+          // START MAIN GAME
+          room.gameState = 'PLAYING';
+          room.turn = 'p1';
+          room.turnCount = 1;
+          
+          // Deal Hands
+          room.p1Hand = room.mainDeck.splice(0, 6);
+          room.p2Hand = room.mainDeck.splice(0, 6);
+
+          // Send Game Start Signal
+          io.to(roomId).emit('game_start_sync', {
+              p1Stats: room.p1Stats,
+              p2Stats: room.p2Stats,
+              turn: room.turn,
+              p1KingCards: room.p1KingCards,
+              p2KingCards: room.p2KingCards,
+              deckCount: room.mainDeck.length
+          });
+
+          // Send Private Hands
+          io.to(room.p1.id).emit('hand_update', room.p1Hand);
+          io.to(room.p2.id).emit('hand_update', room.p2Hand);
+      }
   });
 
   // --- GAMEPLAY SYNC ---
@@ -189,10 +237,13 @@ io.on('connection', (socket) => {
       const room = rooms[roomId];
       if (!room) return;
 
-      // Update Server State (Authoritative storage)
+      // Update Server State
       if (newState.p1Stats) room.p1Stats = newState.p1Stats;
       if (newState.p2Stats) room.p2Stats = newState.p2Stats;
       if (newState.turn) room.turn = newState.turn;
+      
+      // If a card was played, we assume client managed their hand locally for speed,
+      // but in a strict server we'd validate. Here we just sync.
       
       // Broadcast to all
       io.to(roomId).emit('state_sync', {
@@ -202,6 +253,20 @@ io.on('connection', (socket) => {
           event: event, 
           log: log
       });
+  });
+  
+  socket.on('draw_card_req', ({ roomId }) => {
+      const room = rooms[roomId];
+      if (!room || room.mainDeck.length === 0) return;
+      
+      const isP1 = room.p1.id === socket.id;
+      const card = room.mainDeck.shift();
+      
+      // Send card ONLY to requester
+      socket.emit('card_drawn', { card });
+      
+      // Tell opponent deck count changed
+      socket.broadcast.to(roomId).emit('deck_count_update', room.mainDeck.length);
   });
 
   socket.on('disconnect', () => {
