@@ -18,11 +18,12 @@ const io = new Server(server, {
 const rooms = {};
 
 io.on('connection', (socket) => {
-  console.log('Uživatel připojen:', socket.id);
+  console.log('User connected:', socket.id);
 
-  // --- LOBBY LOGIKA ---
+  // --- LOBBY LOGIC ---
 
   socket.on('create_room', (roomId) => {
+    console.log(`User ${socket.id} trying to create room ${roomId}`);
     if (rooms[roomId]) {
       socket.emit('error', 'Místnost již existuje');
       return;
@@ -37,15 +38,17 @@ io.on('connection', (socket) => {
       deckData: null
     };
     
-    console.log(`Místnost ${roomId} vytvořena uživatelem ${socket.id}`);
+    console.log(`Room ${roomId} created by ${socket.id}`);
     socket.emit('room_created', roomId);
     io.to(roomId).emit('lobby_update', rooms[roomId]);
   });
 
   socket.on('join_room', (roomId) => {
+    console.log(`User ${socket.id} trying to join room ${roomId}`);
     const room = rooms[roomId];
     
     if (!room) {
+      console.log(`Room ${roomId} not found for user ${socket.id}`);
       socket.emit('error', 'Místnost nenalezena');
       return;
     }
@@ -57,13 +60,13 @@ io.on('connection', (socket) => {
 
     socket.join(roomId);
     
-    // Přiřazení jiné barvy pro P2, pokud má P1 stejnou
+    // Assign distinct color for P2 if collision
     let p2Color = 1;
     if (room.p1.colorId === 1) p2Color = 0;
 
     room.p2 = { id: socket.id, nickname: 'PLAYER 2', colorId: p2Color, isReady: false, role: 'p2' };
     
-    console.log(`Uživatel ${socket.id} vstoupil do ${roomId}`);
+    console.log(`User ${socket.id} joined room ${roomId}`);
     io.to(roomId).emit('lobby_update', room);
   });
 
@@ -95,11 +98,13 @@ io.on('connection', (socket) => {
   socket.on('start_game_request', ({ roomId, deckData }) => {
       const room = rooms[roomId];
       if (!room || !room.p1 || !room.p2) return;
-      if (room.p1.id !== socket.id) return; // Pouze hostitel startuje
+      if (room.p1.id !== socket.id) return; // Only host starts
       if (!room.p1.isReady || !room.p2.isReady) return; 
 
       room.gameStarted = true;
       room.deckData = deckData;
+      
+      console.log(`Game started in room ${roomId}`);
 
       io.to(roomId).emit('game_start', {
           deckData: room.deckData,
@@ -108,9 +113,9 @@ io.on('connection', (socket) => {
       });
   });
 
-  // --- HERNÍ LOGIKA ---
+  // --- GAME LOGIC ---
 
-  // Odeslání akce (animace, END_TURN)
+  // Action relay (Animation, Discard, End Turn signal)
   socket.on('game_action', ({ roomId, action }) => {
     if (action.type === 'END_TURN') {
         console.log(`[${roomId}] Turn Ended by ${socket.id}`);
@@ -118,9 +123,9 @@ io.on('connection', (socket) => {
     socket.to(roomId).emit('opponent_action', action);
   });
 
-  // SYNCHRONIZACE STAVU (Authoritative Broadcast)
+  // STATE SYNC (Authoritative Broadcast)
   socket.on('game_sync', ({ roomId, p1Stats, p2Stats, turnCounts }) => {
-      // Pošle nové statistiky druhému hráči
+      // Forward new stats to opponent
       socket.to(roomId).emit('game_sync_update', { p1Stats, p2Stats, turnCounts });
   });
   
@@ -137,7 +142,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
-    console.log('Uživatel odpojen:', socket.id);
+    console.log('User disconnected:', socket.id);
     for (const roomId in rooms) {
       const room = rooms[roomId];
       if ((room.p1 && room.p1.id === socket.id) || (room.p2 && room.p2.id === socket.id)) {
@@ -147,9 +152,11 @@ io.on('connection', (socket) => {
             delete rooms[roomId];
         } else {
             if (room.p1 && room.p1.id === socket.id) {
+                // Host left lobby -> kill room
                 io.to(roomId).emit('opponent_disconnected');
                 delete rooms[roomId];
             } else {
+                // Guest left lobby -> clear slot
                 room.p2 = null;
                 io.to(roomId).emit('lobby_update', room);
             }
@@ -161,5 +168,5 @@ io.on('connection', (socket) => {
 
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
-  console.log(`Server běží na portu ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
