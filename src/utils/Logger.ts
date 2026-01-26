@@ -42,9 +42,19 @@ const emo = (emoji: string) => `<span class="text-2xl align-middle drop-shadow-m
 
 const getIcon = (card: CardType) => {
     if (card.img) return card.img;
+    
     // Fallback lookup if card object is partial
     const dbCard = CARDS_DB_BASE.find(c => c.id == card.id) || KING_CARDS_DB.find(c => c.id == card.id);
-    return dbCard?.img || '🃏';
+    if (dbCard && dbCard.img) return dbCard.img;
+
+    // Type-based fallback (No more Joker default unless unknown)
+    if (card.type === 0) return '🧱';
+    if (card.type === 1) return '⚔️';
+    if (card.type === 2) return '💎';
+    if (card.type === 3) return '👑';
+    if (card.type === 4) return '✨';
+    
+    return '🃏';
 }
 
 export const Logger = {
