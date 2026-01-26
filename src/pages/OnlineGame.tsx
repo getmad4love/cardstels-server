@@ -17,7 +17,7 @@ import {
 import { playSFX, resumeAudioContext, toggleMusic, toggleSfx } from '../utils/audioManager';
 import { Logger } from '../utils/Logger';
 
-// FORCE ONLINE SERVER AS REQUESTED
+// FORCE ONLINE SERVER
 const SERVER_URL = 'https://cardstels-server.onrender.com';
 
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -225,6 +225,13 @@ const OnlineGame = () => {
         setTimeout(() => setFloatingTexts(prev => prev.filter(t => t.id !== id)), 2500);
     }, []);
 
+    // FIX: Auto-scroll console
+    useEffect(() => {
+        if (logEndRef.current) {
+            logEndRef.current.scrollIntoView({ behavior: 'smooth' });
+        }
+    }, [log]);
+
     // --- SOCKET INIT ---
     useEffect(() => {
         if (socketRef.current) return;
@@ -329,6 +336,7 @@ const OnlineGame = () => {
             await delay(3500); 
             setIsInsertingKingPowers(false);
             
+            // Only set to playing AFTER delays are done
             setGamePhase('PLAYING');
             setP1Stats(data.p1Stats);
             setP2Stats(data.p2Stats);
@@ -401,6 +409,8 @@ const OnlineGame = () => {
                     }
                 }
                 if (data.event.type === 'END_TURN') {
+                    // Only reset card played if it was MY turn ending, or if just syncing generally
+                    // But if it was opponent ending turn, this enables my button.
                     setCardPlayedInTurn(0);
                 }
             }
@@ -408,7 +418,11 @@ const OnlineGame = () => {
             // Sync Logs
             if (data.logs && Array.isArray(data.logs)) {
                 data.logs.forEach((logItem: any) => {
-                    addLog(logItem.text, logItem.type, logItem.isRawHtml);
+                    const eventPlayer = data.event ? data.event.player : null;
+                    // Prevent duplicate local logs if we already added them optimistically
+                    if (eventPlayer && eventPlayer !== currentRole) {
+                         addLog(logItem.text, logItem.type, logItem.isRawHtml);
+                    }
                 });
             }
         });
@@ -441,7 +455,8 @@ const OnlineGame = () => {
     }, []);
 
     const handleCardPlay = async (card: CardType) => {
-        if (!isMyTurn || isProcessingTurn) return;
+        // FIX: Ensure phase is PLAYING to prevent premature moves
+        if (!isMyTurn || isProcessingTurn || gamePhase !== 'PLAYING') return;
         setIsProcessingTurn(true);
         setShowCards(false);
 
@@ -453,17 +468,11 @@ const OnlineGame = () => {
         const myKingCards = isP1 ? p1KingCards : p2KingCards;
         const opKingCards = isP1 ? p2KingCards : p1KingCards;
 
-        // 2. Pay Cost
+        // 2. Prepare Cost String for Log (Before deduction)
+        // FIX: Removed manual subtraction here! playCardAction handles deduction internally.
         const { costB, costW, costC } = getEffectiveCardCost(card, myKingCards);
-        
-        // Prepare Cost String for Log (Before deduction to show what was paid)
         const costPaidStats = { ...localMe, bricks: localMe.bricks - costB, weapons: localMe.weapons - costW, crystals: localMe.crystals - costC };
         const costStr = Logger.formatCost(localMe, costPaidStats);
-
-        // Apply payment
-        localMe.bricks -= costB;
-        localMe.weapons -= costW;
-        localMe.crystals -= costC;
 
         const generatedLogs: any[] = [];
         
@@ -471,16 +480,20 @@ const OnlineGame = () => {
         const setMe = (cb: any) => { localMe = typeof cb === 'function' ? cb(localMe) : cb; };
         const setOpponent = (cb: any) => { localOp = typeof cb === 'function' ? cb(localOp) : cb; };
 
+        // 4. Update Hand Helper
         const mockContext: GameContext = {
             me: localMe,
             opponent: localOp,
             setMe,
             setOpponent,
-            myHand: [], // Not needed for calculation
-            setMyHand: () => {},
+            myHand: myHand, 
+            setMyHand: setMyHand,
             myKingCards,
             opponentKingCards: opKingCards,
-            addLog: (msg, type, isHtml) => generatedLogs.push({ text: msg, type: type || (isP1 ? 'PLAYER' : 'OPPONENT'), isRawHtml: isHtml }),
+            addLog: (msg, type, isHtml) => {
+                addLog(msg, type || (isP1 ? 'PLAYER' : 'OPPONENT'), isHtml);
+                generatedLogs.push({ text: msg, type: type || (isP1 ? 'PLAYER' : 'OPPONENT'), isRawHtml: isHtml });
+            },
             playSFX: () => {}, // Visuals handled by event emission
             triggerAnimation: () => {},
             spawnParticles: () => {},
@@ -491,19 +504,16 @@ const OnlineGame = () => {
             labels: { p1: P1_LABEL, p2: P2_LABEL }
         };
 
-        // 4. Run Logic (Same as Local Game)
-        await playCardAction(card, mockContext);
-
-        // 5. Update Hand Locally
-        const nextHand = myHand.filter(c => c.uniqueId !== card.uniqueId);
-        setMyHand(nextHand);
-
-        // 6. Generate Main Log (Now includes Cost string correctly)
+        // 5. Generate Main Log & Add Locally
         const playLog = { 
             text: Logger.cardPlayed(isP1 ? P1_LABEL : P2_LABEL, card, costStr), 
             type: isP1 ? 'PLAYER' : 'OPPONENT',
             isRawHtml: true
         };
+        addLog(playLog.text, playLog.type, playLog.isRawHtml);
+
+        // 6. Run Logic (Same as Local Game)
+        await playCardAction(card, mockContext);
 
         // 7. Visuals
         playSFX('play_card');
@@ -541,7 +551,8 @@ const OnlineGame = () => {
     };
 
     const handleCardDiscard = (card: CardType) => {
-        if (!isMyTurn || isProcessingTurn) return;
+        // FIX: Ensure phase is PLAYING
+        if (!isMyTurn || isProcessingTurn || gamePhase !== 'PLAYING') return;
         setIsProcessingTurn(true);
         setShowCards(false);
 
@@ -556,6 +567,9 @@ const OnlineGame = () => {
             type: isP1 ? 'PLAYER' : 'OPPONENT',
             isRawHtml: true
         };
+        
+        // Optimistic Log
+        addLog(discardLog.text, discardLog.type, discardLog.isRawHtml);
 
         playSFX('play_card');
         setLastDiscardedCard({ card, action: 'DISCARD' });
@@ -566,7 +580,7 @@ const OnlineGame = () => {
                 action: 'DISCARD_CARD',
                 payload: {
                     card,
-                    newP1Stats: p1Stats, // No stat change on discard usually
+                    newP1Stats: p1Stats, 
                     newP2Stats: p2Stats,
                     logs: [discardLog]
                 }
@@ -578,7 +592,8 @@ const OnlineGame = () => {
     };
 
     const handleEndTurn = async () => {
-        if (!isMyTurn || isProcessingTurn) return;
+        // FIX: Ensure phase is PLAYING and it's definitely my turn
+        if (!isMyTurn || isProcessingTurn || gamePhase !== 'PLAYING') return;
         setIsProcessingTurn(true);
 
         const isP1 = myRole === 'p1';
@@ -598,11 +613,13 @@ const OnlineGame = () => {
         localMe.weapons += totalW;
         localMe.crystals += totalC;
 
-        logs.push({ 
+        const prodLog = { 
             text: Logger.production(isP1 ? P1_LABEL : P2_LABEL, totalB, totalW, totalC, true),
             type: isP1 ? 'PLAYER' : 'OPPONENT',
             isRawHtml: true 
-        });
+        };
+        logs.push(prodLog);
+        addLog(prodLog.text, prodLog.type, prodLog.isRawHtml);
 
         // 2. Archer Logic (End of Turn)
         if (localMe.wall >= 50) {
@@ -613,12 +630,18 @@ const OnlineGame = () => {
             // Calculate damage on opponent locally
             if (localOp.shield > 0) {
                 playSFX('hit_wall');
-                logs.push({ text: Logger.special(isP1 ? P2_LABEL : P1_LABEL, "SHIELD BLOCKED ARCHER!"), type: 'WARNING', isRawHtml: true });
+                const blkLog = { text: Logger.special(isP1 ? P2_LABEL : P1_LABEL, "SHIELD BLOCKED ARCHER!"), type: 'WARNING', isRawHtml: true };
+                logs.push(blkLog);
+                addLog(blkLog.text, blkLog.type, blkLog.isRawHtml);
             } else {
                 const oldOp = { ...localOp };
                 localOp = calculateDamage(localOp, dmg);
                 const diffLog = Logger.diff(oldOp, localOp, false);
-                if (diffLog) logs.push({ text: `${isP1 ? P2_LABEL : P1_LABEL}: ${diffLog}`, type: 'OPPONENT', isRawHtml: true });
+                if (diffLog) {
+                    const dLog = { text: `${isP1 ? P2_LABEL : P1_LABEL}: ${diffLog}`, type: 'OPPONENT', isRawHtml: true };
+                    logs.push(dLog);
+                    addLog(dLog.text, dLog.type, dLog.isRawHtml);
+                }
             }
         }
 
@@ -641,7 +664,6 @@ const OnlineGame = () => {
     // --- VISUAL EFFECTS ---
     
     // Trigger effects on stat changes (Syncs floating text for both players)
-    // Using prevP1/prevP2 from usePrevious hook to ensure we capture state changes correctly from Server Sync
     useEffect(() => {
         if (!prevP1 || !prevP2 || !gameRef.current) return;
         const checkDiff = (curr: any, prev: any, prefix: string, isPlayerStats: boolean) => {
@@ -922,7 +944,7 @@ const OnlineGame = () => {
                         onClose={() => setShowCards(false)} 
                         canAffordFn={canAfford} 
                         cardPlayedInTurn={cardPlayedInTurn} 
-                        isLocked={!isMyTurn || isProcessingTurn} 
+                        isLocked={!isMyTurn || isProcessingTurn || gamePhase !== 'PLAYING'} 
                         p1Name={`${P1_LABEL} CASTLE`} 
                         p2Name={`${P2_LABEL} CASTLE`} 
                         kingCards={myRole === 'p1' ? p1KingCards : p2KingCards} 
