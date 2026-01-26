@@ -184,14 +184,14 @@ io.on('connection', (socket) => {
               const p1Hand = [];
               const p2Hand = [];
               
+              const kp = { id: 42, name: "KING POWER", type: 2, costB: 0, costW: 0, costC: 0, desc: "UNLOCK A PASSIVE BONUS", img: "👑", count: 1 };
+              for(let k=0; k<4; k++) room.mainDeck.push({ ...kp, uniqueId: Math.random().toString() });
+              room.mainDeck = shuffle(room.mainDeck);
+
               for(let i=0; i<6; i++) {
                   if(room.mainDeck.length) p1Hand.push(room.mainDeck.shift());
                   if(room.mainDeck.length) p2Hand.push(room.mainDeck.shift());
               }
-              
-              const kp = { id: 42, name: "KING POWER", type: 2, costB: 0, costW: 0, costC: 0, desc: "UNLOCK A PASSIVE BONUS", img: "👑", count: 1 };
-              for(let k=0; k<4; k++) room.mainDeck.push({ ...kp, uniqueId: Math.random().toString() });
-              room.mainDeck = shuffle(room.mainDeck);
               
               io.to(roomId).emit('start_dealing_sequence', {
                   p1Stats: room.p1Stats,
@@ -204,7 +204,7 @@ io.on('connection', (socket) => {
                   p1Kings: room.p1KingCards,
                   p2Kings: room.p2KingCards
               });
-          }, 2000);
+          }, 1500);
       }
   });
 
@@ -223,33 +223,55 @@ io.on('connection', (socket) => {
           }
       }
       
-      io.to(roomId).emit('state_sync', {
-          p1Stats: payload.newP1Stats,
-          p2Stats: payload.newP2Stats,
-          turn: action === 'END_TURN' ? (room.turn === 'p1' ? 'p2' : 'p1') : room.turn,
-          deckCount: room.mainDeck.length,
-          event: { type: action, cardId: payload.card?.id, player: (room.p1.id === socket.id ? 'p1' : 'p2') },
-          logs: payload.logs,
-          // CRITICAL FIX: Send names to keep clients synced if they refresh
-          p1Nickname: room.p1 ? room.p1.nickname : "PLAYER 1",
-          p2Nickname: room.p2 ? room.p2.nickname : "PLAYER 2"
-      });
-      
+      // CRITICAL FIX: Update turn on Server BEFORE emitting sync
       if (action === 'END_TURN') {
           room.turn = (room.turn === 'p1' ? 'p2' : 'p1');
       }
+
+      io.to(roomId).emit('state_sync', {
+          p1Stats: room.p1Stats,
+          p2Stats: room.p2Stats,
+          turn: room.turn, // Send the NEW updated turn
+          deckCount: room.mainDeck.length,
+          event: { type: action, cardId: payload.card?.id, player: (room.p1.id === socket.id ? 'p1' : 'p2') },
+          logs: payload.logs,
+          p1Nickname: room.p1 ? room.p1.nickname : "PLAYER 1",
+          p2Nickname: room.p2 ? room.p2.nickname : "PLAYER 2"
+      });
   });
   
   socket.on('draw_card_req', ({ roomId }) => {
       const room = rooms[roomId];
       if(!room) return;
-      const isP1 = room.p1.id === socket.id;
       
       if (room.mainDeck.length > 0) {
           const card = room.mainDeck.shift();
-          socket.emit('card_drawn', { card });
-          socket.broadcast.to(roomId).emit('opponent_drew_card');
+          // Send specific card to the requestor
+          socket.emit('player_drew', { card, role: (room.p1.id === socket.id ? 'p1' : 'p2') });
+          // Tell everyone else someone drew (card hidden)
           io.to(roomId).emit('deck_count_update', room.mainDeck.length);
+          socket.broadcast.to(roomId).emit('player_drew', { card: null, role: (room.p1.id === socket.id ? 'p1' : 'p2') });
+      }
+  });
+  
+  socket.on('activate_king_power', ({ roomId, p1Card, p2Card }) => {
+      io.to(roomId).emit('king_power_triggered', { p1Card, p2Card });
+  });
+
+  socket.on('request_rematch', ({ roomId }) => {
+      const room = rooms[roomId];
+      if(!room) return;
+      
+      if (room.p1.id === socket.id) room.p1.wantsRematch = true;
+      if (room.p2 && room.p2.id === socket.id) room.p2.wantsRematch = true;
+      
+      io.to(roomId).emit('rematch_update', { p1: room.p1.wantsRematch, p2: room.p2 ? room.p2.wantsRematch : false });
+      
+      if (room.p1.wantsRematch && room.p2 && room.p2.wantsRematch) {
+          // Restart
+          room.p1.wantsRematch = false;
+          room.p2.wantsRematch = false;
+          io.to(roomId).emit('game_restart');
       }
   });
 
