@@ -27,11 +27,9 @@ const shuffle = (array) => {
 };
 
 io.on('connection', (socket) => {
-  console.log('User connected:', socket.id);
-
   // --- LOBBY LOGIC ---
 
-  socket.on('create_room', (roomId) => {
+  socket.on('create_room', ({ roomId, nickname, colorId }) => {
     if (rooms[roomId]) {
       socket.emit('error', 'Room already exists');
       return;
@@ -41,33 +39,31 @@ io.on('connection', (socket) => {
     
     rooms[roomId] = {
       id: roomId,
-      p1: { id: socket.id, nickname: 'PLAYER 1', colorId: 0, isReady: false, role: 'p1' },
+      p1: { id: socket.id, nickname: nickname || 'PLAYER 1', colorId: colorId || 0, isReady: false, role: 'p1' },
       p2: null,
-      gameState: 'LOBBY', // LOBBY, PLAYING, ENDED
-      // Game Data
+      gameState: 'LOBBY', 
       deck: [],
+      kingDeck: [], // For king selection
       p1Hand: [],
       p2Hand: [],
+      p1KingCards: [],
+      p2KingCards: [],
       p1Stats: null,
       p2Stats: null,
       turn: 'p1',
-      logs: [],
       turnCount: 1
     };
     
-    console.log(`Room ${roomId} created by ${socket.id}`);
     socket.emit('room_created', roomId);
     io.to(roomId).emit('lobby_update', { p1: rooms[roomId].p1, p2: rooms[roomId].p2 });
   });
 
-  socket.on('join_room', (roomId) => {
+  socket.on('join_room', ({ roomId, nickname, colorId }) => {
     const room = rooms[roomId];
-    
     if (!room) {
       socket.emit('error', 'Room not found');
       return;
     }
-    
     if (room.p2) {
       socket.emit('error', 'Room is full');
       return;
@@ -75,29 +71,30 @@ io.on('connection', (socket) => {
 
     socket.join(roomId);
     
-    // Assign different color to P2 if needed
-    let p2Color = 1;
-    if (room.p1.colorId === 1) p2Color = 0;
+    // Ensure distinct color if conflict
+    let finalColor = colorId || 1;
+    if (room.p1.colorId === finalColor) finalColor = (finalColor + 1) % 8;
 
-    room.p2 = { id: socket.id, nickname: 'PLAYER 2', colorId: p2Color, isReady: false, role: 'p2' };
+    room.p2 = { id: socket.id, nickname: nickname || 'PLAYER 2', colorId: finalColor, isReady: false, role: 'p2' };
     
-    console.log(`User ${socket.id} joined ${roomId}`);
     io.to(roomId).emit('lobby_update', { p1: room.p1, p2: room.p2 });
   });
 
-  socket.on('update_player_info', ({ roomId, nickname, colorId }) => {
-    const room = rooms[roomId];
-    if (!room) return;
+  socket.on('update_lobby_settings', ({ roomId, nickname, colorId }) => {
+      const room = rooms[roomId];
+      if (!room) return;
 
-    let target = null;
-    if (room.p1 && room.p1.id === socket.id) target = room.p1;
-    else if (room.p2 && room.p2.id === socket.id) target = room.p2;
+      let target = null;
+      if (room.p1 && room.p1.id === socket.id) target = room.p1;
+      else if (room.p2 && room.p2.id === socket.id) target = room.p2;
 
-    if (target) {
-        target.nickname = nickname.substring(0, 12).toUpperCase(); 
-        target.colorId = colorId;
-        io.to(roomId).emit('lobby_update', { p1: room.p1, p2: room.p2 });
-    }
+      if (target) {
+          if (nickname) target.nickname = nickname.substring(0, 12).toUpperCase();
+          if (colorId !== undefined) target.colorId = colorId;
+          // Reset ready status on change to prevent abuse
+          target.isReady = false; 
+          io.to(roomId).emit('lobby_update', { p1: room.p1, p2: room.p2 });
+      }
   });
 
   socket.on('toggle_ready', ({ roomId, isReady }) => {
@@ -110,17 +107,59 @@ io.on('connection', (socket) => {
       io.to(roomId).emit('lobby_update', { p1: room.p1, p2: room.p2 });
   });
 
-  // --- GAME START & SYNC ---
-
-  socket.on('start_game_request', ({ roomId, initialDeck, initialStats }) => {
+  socket.on('lobby_chat', ({ roomId, message }) => {
       const room = rooms[roomId];
-      if (!room || !room.p1 || !room.p2) return;
-      if (room.p1.id !== socket.id) return; // Only host starts
-      if (!room.p1.isReady || !room.p2.isReady) return; 
+      if (!room) return;
+      let sender = null;
+      if (room.p1 && room.p1.id === socket.id) sender = room.p1;
+      else if (room.p2 && room.p2.id === socket.id) sender = room.p2;
+
+      if (sender) {
+          io.to(roomId).emit('chat_message', { 
+              text: message.substring(0, 32), 
+              senderName: sender.nickname, 
+              colorId: sender.colorId,
+              senderId: socket.id
+          });
+      }
+  });
+
+  // --- GAME START & KING SELECTION ---
+
+  socket.on('init_king_selection', ({ roomId, kingDeck }) => {
+      const room = rooms[roomId];
+      if (!room) return;
+      
+      // Host starts this
+      room.gameState = 'KING_SELECTION';
+      room.kingDeck = shuffle(kingDeck);
+      
+      io.to(roomId).emit('king_selection_start', {
+          deck: room.kingDeck
+      });
+  });
+
+  socket.on('king_selected', ({ roomId, card, role, remainingDeck }) => {
+      const room = rooms[roomId];
+      if (!room) return;
+
+      if (role === 'p1') {
+          room.p1KingCards.push(card);
+          room.kingDeck = remainingDeck; // Update deck after P1 draw
+      } else {
+          room.p2KingCards.push(card);
+          // End of selection
+      }
+
+      // Broadcast selection event so clients update UI
+      io.to(roomId).emit('king_card_chosen', { card, role, remainingDeck });
+  });
+
+  socket.on('start_main_game', ({ roomId, initialDeck, initialStats }) => {
+      const room = rooms[roomId];
+      if (!room) return;
 
       room.gameState = 'PLAYING';
-      
-      // Initialize Game State
       room.deck = shuffle([...initialDeck]);
       room.p1Stats = { ...initialStats };
       room.p2Stats = { ...initialStats };
@@ -132,66 +171,52 @@ io.on('connection', (socket) => {
       room.turn = 'p1';
       room.turnCount = 1;
 
-      io.to(roomId).emit('game_start', {
-          p1: room.p1,
-          p2: room.p2,
+      io.to(roomId).emit('game_started_final', {
           p1Stats: room.p1Stats,
           p2Stats: room.p2Stats,
           turn: room.turn,
+          deckCount: room.deck.length
       });
       
-      // Send specific hands
-      io.to(room.p1.id).emit('hand_update', room.p1Hand);
-      io.to(room.p2.id).emit('hand_update', room.p2Hand);
+      // Send private hands
+      if (room.p1) io.to(room.p1.id).emit('hand_deal', room.p1Hand);
+      if (room.p2) io.to(room.p2.id).emit('hand_deal', room.p2Hand);
   });
 
-  // --- GAME ACTIONS ---
+  // --- GAMEPLAY SYNC ---
 
   socket.on('game_action_sync', ({ roomId, newState, event, log }) => {
       const room = rooms[roomId];
       if (!room) return;
 
+      // Update Server State (Authoritative storage)
       if (newState.p1Stats) room.p1Stats = newState.p1Stats;
       if (newState.p2Stats) room.p2Stats = newState.p2Stats;
-      if (newState.deck) room.deck = newState.deck;
-      if (newState.p1Hand) room.p1Hand = newState.p1Hand;
-      if (newState.p2Hand) room.p2Hand = newState.p2Hand;
       if (newState.turn) room.turn = newState.turn;
       
-      // Broadcast update to everyone with detailed event info
+      // Broadcast to all
       io.to(roomId).emit('state_sync', {
           p1Stats: room.p1Stats,
           p2Stats: room.p2Stats,
           turn: room.turn,
-          event: event, // Contains { type: 'PLAY_CARD', cardId: 10, player: 'p1' }
+          event: event, 
           log: log
       });
-
-      if (room.p1) io.to(room.p1.id).emit('hand_update', room.p1Hand);
-      if (room.p2) io.to(room.p2.id).emit('hand_update', room.p2Hand);
-  });
-
-  socket.on('chat_message', ({ roomId, message, color }) => {
-    io.to(roomId).emit('chat_message', { 
-      text: message, 
-      senderId: socket.id, 
-      color 
-    });
   });
 
   socket.on('disconnect', () => {
-    console.log('User disconnected:', socket.id);
     for (const roomId in rooms) {
       const room = rooms[roomId];
       if ((room.p1 && room.p1.id === socket.id) || (room.p2 && room.p2.id === socket.id)) {
         
-        if (room.gameState === 'PLAYING') {
+        if (room.gameState !== 'LOBBY') {
             io.to(roomId).emit('opponent_disconnected');
             delete rooms[roomId];
         } else {
+            // In Lobby
             if (room.p1 && room.p1.id === socket.id) {
-                // Host left, close room
-                io.to(roomId).emit('opponent_disconnected');
+                // Host left
+                io.to(roomId).emit('host_left');
                 delete rooms[roomId];
             } else {
                 // Guest left
