@@ -60,9 +60,7 @@ io.on('connection', (socket) => {
       p2Stats: null,
       p1KingCards: [], // Initialize empty arrays for King Cards
       p2KingCards: [],
-      turn: 'p1',
-      mainDeck: [],
-      kingDeck: []
+      turn: 'p1'
     };
     
     socket.emit('room_created', roomId);
@@ -135,7 +133,6 @@ io.on('connection', (socket) => {
           room.p2Stats = { ...initialStats };
           room.p1KingCards = []; // Reset King Cards
           room.p2KingCards = [];
-          room.turn = 'p1';
           
           const options = room.kingDeck.slice(0, 3);
           
@@ -226,60 +223,33 @@ io.on('connection', (socket) => {
           }
       }
       
-      // FIX: Update turn BEFORE emitting state sync to ensure everyone gets the new turn value
-      if (action === 'END_TURN') {
-          room.turn = (room.turn === 'p1' ? 'p2' : 'p1');
-      }
-
       io.to(roomId).emit('state_sync', {
           p1Stats: payload.newP1Stats,
           p2Stats: payload.newP2Stats,
-          turn: room.turn, // Now correctly updated
+          turn: action === 'END_TURN' ? (room.turn === 'p1' ? 'p2' : 'p1') : room.turn,
           deckCount: room.mainDeck.length,
           event: { type: action, cardId: payload.card?.id, player: (room.p1.id === socket.id ? 'p1' : 'p2') },
           logs: payload.logs,
+          // CRITICAL FIX: Send names to keep clients synced if they refresh
           p1Nickname: room.p1 ? room.p1.nickname : "PLAYER 1",
           p2Nickname: room.p2 ? room.p2.nickname : "PLAYER 2"
       });
+      
+      if (action === 'END_TURN') {
+          room.turn = (room.turn === 'p1' ? 'p2' : 'p1');
+      }
   });
   
   socket.on('draw_card_req', ({ roomId }) => {
       const room = rooms[roomId];
       if(!room) return;
-      const isP1 = room.p1 && room.p1.id === socket.id;
-      const role = isP1 ? 'p1' : 'p2';
+      const isP1 = room.p1.id === socket.id;
       
       if (room.mainDeck.length > 0) {
           const card = room.mainDeck.shift();
-          
-          // Send specific card to the person who drew
-          socket.emit('player_drew', { card, role });
-          
-          // Send generic "animation" event to the opponent (so they see card fly but not face)
-          socket.to(roomId).emit('player_drew', { card: null, role });
-          
+          socket.emit('card_drawn', { card });
+          socket.broadcast.to(roomId).emit('opponent_drew_card');
           io.to(roomId).emit('deck_count_update', room.mainDeck.length);
-      }
-  });
-
-  socket.on('activate_king_power', ({ roomId, p1Card, p2Card }) => {
-      io.to(roomId).emit('king_power_triggered', { p1Card, p2Card });
-  });
-
-  socket.on('request_rematch', ({ roomId }) => {
-      const room = rooms[roomId];
-      if (!room) return;
-      
-      if (socket.id === room.p1.id) room.rematchP1 = true;
-      if (socket.id === room.p2.id) room.rematchP2 = true;
-      
-      io.to(roomId).emit('rematch_update', { p1: !!room.rematchP1, p2: !!room.rematchP2 });
-      
-      if (room.rematchP1 && room.rematchP2) {
-          room.rematchP1 = false;
-          room.rematchP2 = false;
-          // Trigger restart
-          io.to(roomId).emit('game_restart');
       }
   });
 
