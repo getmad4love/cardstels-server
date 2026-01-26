@@ -75,9 +75,6 @@ io.on('connection', (socket) => {
     else if (room.p2 && room.p2.id === socket.id) target = room.p2;
 
     if (target) {
-        // Allow mixed case for nicknames if desired, or keep uppercase. 
-        // User requested Chat mixed case, but usually nicknames are caps in this game style.
-        // Keeping nicknames uppercase for consistency with UI, chat will be mixed.
         target.nickname = nickname.substring(0, 12).toUpperCase(); 
         target.colorId = colorId;
         io.to(roomId).emit('lobby_update', room);
@@ -112,8 +109,15 @@ io.on('connection', (socket) => {
 
   // --- HERNÍ LOGIKA ---
 
+  // Odeslání akce (animace)
   socket.on('game_action', ({ roomId, action }) => {
     socket.to(roomId).emit('opponent_action', action);
+  });
+
+  // SYNCHRONIZACE STAVU (Přesunuto z klienta na server stylem "Authoritative Broadcast")
+  socket.on('game_sync', ({ roomId, p1Stats, p2Stats, turnCounts }) => {
+      // Pošle nové statistiky druhému hráči
+      socket.to(roomId).emit('game_sync_update', { p1Stats, p2Stats, turnCounts });
   });
   
   socket.on('king_selected', ({ roomId, card, role }) => {
