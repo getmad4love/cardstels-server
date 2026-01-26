@@ -42,7 +42,29 @@ io.on('connection', (socket) => {
     }
 
     if (rooms[roomId]) {
-      socket.emit('error', 'Room already exists');
+      // Allow host reconnect
+      console.log(`[LOBBY] Room ${roomId} exists. Reconnecting Host/P1 with new socket ${socket.id}`);
+      if (rooms[roomId].p1) {
+          rooms[roomId].p1.id = socket.id;
+          socket.join(roomId);
+          socket.emit('room_created', roomId);
+          io.to(roomId).emit('lobby_update', { p1: rooms[roomId].p1, p2: rooms[roomId].p2 });
+          
+          // If game is in progress, send sync
+          if (rooms[roomId].gameState !== 'LOBBY') {
+             socket.emit('game_start_sync', {
+                p1Stats: rooms[roomId].p1Stats,
+                p2Stats: rooms[roomId].p2Stats,
+                turn: rooms[roomId].turn,
+                p1KingCards: rooms[roomId].p1KingCards,
+                p2KingCards: rooms[roomId].p2KingCards,
+                deckCount: rooms[roomId].mainDeck.length
+             });
+             socket.emit('hand_update', rooms[roomId].p1Hand);
+          }
+      } else {
+          socket.emit('error', 'Room state invalid (P1 missing)');
+      }
       return;
     }
     
@@ -81,8 +103,24 @@ io.on('connection', (socket) => {
       return;
     }
     if (room.p2) {
-      // Check if it's a reconnect (same socket ID or logic could go here, but for now reject)
-      socket.emit('error', 'Room is full');
+      // Allow P2 Reconnect
+      console.log(`[LOBBY] Room ${roomId} full. Reconnecting P2 with new socket ${socket.id}`);
+      room.p2.id = socket.id;
+      socket.join(roomId);
+      io.to(roomId).emit('lobby_update', { p1: room.p1, p2: room.p2 });
+      
+      // If game is in progress, send sync
+      if (room.gameState !== 'LOBBY') {
+         socket.emit('game_start_sync', {
+            p1Stats: room.p1Stats,
+            p2Stats: room.p2Stats,
+            turn: room.turn,
+            p1KingCards: room.p1KingCards,
+            p2KingCards: room.p2KingCards,
+            deckCount: room.mainDeck.length
+         });
+         socket.emit('hand_update', room.p2Hand);
+      }
       return;
     }
 
@@ -274,28 +312,20 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => {
     console.log(`[SOCKET] Disconnected: ${socket.id}`);
+    
+    // We do NOT remove the player from the room immediately to allow reconnects.
+    // Cleanup should happen if room is empty for X minutes or explicit leave.
+    // For this simple implementation, we assume players might refresh.
+    
+    // Optional: Notify other player of potential disconnection (but dont end game immediately)
+    // For lobby:
     for (const roomId in rooms) {
-      const room = rooms[roomId];
-      if ((room.p1 && room.p1.id === socket.id) || (room.p2 && room.p2.id === socket.id)) {
-        
-        if (room.gameState !== 'LOBBY') {
-            console.log(`[GAME] Opponent disconnected in active game ${roomId}`);
-            io.to(roomId).emit('opponent_disconnected');
-            delete rooms[roomId];
-        } else {
-            // In Lobby
-            if (room.p1 && room.p1.id === socket.id) {
-                console.log(`[LOBBY] Host left room ${roomId}`);
-                io.to(roomId).emit('host_left');
-                delete rooms[roomId];
-            } else {
-                console.log(`[LOBBY] Player 2 left room ${roomId}`);
-                room.p2 = null;
-                // Emit update so P1 sees P2 is gone
-                io.to(roomId).emit('lobby_update', { p1: room.p1, p2: null });
-            }
+        const room = rooms[roomId];
+        if (room.gameState === 'LOBBY') {
+             // In lobby, we might want to show they are disconnected or just wait
+             // If P1 leaves lobby, maybe destroy? But they might refresh.
+             // Let's keep it persistent for now.
         }
-      }
     }
   });
 });
