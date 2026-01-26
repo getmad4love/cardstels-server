@@ -233,7 +233,7 @@ io.on('connection', (socket) => {
 
   // --- GAMEPLAY SYNC ---
 
-  socket.on('game_action_sync', ({ roomId, newState, event, log }) => {
+  socket.on('game_action_sync', ({ roomId, newState, event, logs }) => {
       const room = rooms[roomId];
       if (!room) return;
 
@@ -248,7 +248,7 @@ io.on('connection', (socket) => {
           p2Stats: room.p2Stats,
           turn: room.turn,
           event: event, 
-          log: log
+          logs: logs
       });
   });
   
