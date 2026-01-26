@@ -138,9 +138,6 @@ io.on('connection', (socket) => {
           p1Stats: room.p1Stats,
           p2Stats: room.p2Stats,
           turn: room.turn,
-          // Send specific hands only to specific players via client-side logic handling or separate emits
-          // For simplicity in this structure, we send full state and client filters views, 
-          // or we can emit strictly (better for anti-cheat, but focusing on functionality first)
       });
       
       // Send specific hands
@@ -154,8 +151,6 @@ io.on('connection', (socket) => {
       const room = rooms[roomId];
       if (!room) return;
 
-      // Update Server State with the state calculated by the active client
-      // This is "Client Authoritative" for logic, "Server Authoritative" for storage/broadcast
       if (newState.p1Stats) room.p1Stats = newState.p1Stats;
       if (newState.p2Stats) room.p2Stats = newState.p2Stats;
       if (newState.deck) room.deck = newState.deck;
@@ -163,16 +158,15 @@ io.on('connection', (socket) => {
       if (newState.p2Hand) room.p2Hand = newState.p2Hand;
       if (newState.turn) room.turn = newState.turn;
       
-      // Broadcast update to everyone
+      // Broadcast update to everyone with detailed event info
       io.to(roomId).emit('state_sync', {
           p1Stats: room.p1Stats,
           p2Stats: room.p2Stats,
           turn: room.turn,
-          event: event, // Animation triggers (projectile, card play visual)
-          log: log      // Console log message
+          event: event, // Contains { type: 'PLAY_CARD', cardId: 10, player: 'p1' }
+          log: log
       });
 
-      // Update private hands
       if (room.p1) io.to(room.p1.id).emit('hand_update', room.p1Hand);
       if (room.p2) io.to(room.p2.id).emit('hand_update', room.p2Hand);
   });
