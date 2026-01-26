@@ -58,6 +58,8 @@ io.on('connection', (socket) => {
       gameState: 'LOBBY', 
       p1Stats: null,
       p2Stats: null,
+      p1KingCards: [], // Initialize empty arrays for King Cards
+      p2KingCards: [],
       turn: 'p1'
     };
     
@@ -125,11 +127,12 @@ io.on('connection', (socket) => {
 
       try {
           room.gameState = 'KING_SELECTION';
-          // Shuffle on server so both players get same initial deck order if needed, 
-          // but mainly we just relay the deck to clients.
           room.kingDeck = shuffle([...kingDeck]);
+          room.mainDeck = shuffle([...mainDeck]); // STORE MAIN DECK
           room.p1Stats = { ...initialStats };
           room.p2Stats = { ...initialStats };
+          room.p1KingCards = []; // Reset King Cards
+          room.p2KingCards = [];
           
           const options = room.kingDeck.slice(0, 3);
           
@@ -149,16 +152,12 @@ io.on('connection', (socket) => {
       const room = rooms[roomId];
       if (!room) return;
 
-      // We just track phase and relay choices. Logic is client side now? 
-      // No, for King Selection, server logic is simple enough to keep here to coordinate turns.
-      
       const isP1 = room.p1 && room.p1.id === socket.id;
       
       if (isP1) {
           // P1 Selected
-          // Filter out selected card from deck
+          room.p1KingCards.push(card); // Store P1 King Card
           room.kingDeck = room.kingDeck.filter(c => c.id !== card.id);
-          // Shuffle rest
           room.kingDeck = shuffle(room.kingDeck);
           const options = room.kingDeck.slice(0, 3);
           
@@ -166,104 +165,30 @@ io.on('connection', (socket) => {
               phase: 'P2_CHOOSING',
               options: options,
               lastSelected: { card, player: 'p1' },
-              p1Kings: [card],
+              p1Kings: room.p1KingCards,
               p2Kings: []
           });
       } else {
           // P2 Selected -> Start Game
-          const p1Kings = []; // We don't persist these on server anymore, clients handle their own logic
+          room.p2KingCards.push(card); // Store P2 King Card
           
           io.to(roomId).emit('king_selection_update', {
               phase: 'DONE',
               lastSelected: { card, player: 'p2' },
-              p1Kings: [], // Clients will track their own kings based on selection events
-              p2Kings: [] 
+              p1Kings: room.p1KingCards,
+              p2Kings: room.p2KingCards 
           });
 
           // Trigger Deal
           setTimeout(() => {
-              // Generate decks on the fly to relay
-              // This part assumes clients have the same DB, but we send basic structure
-              // Ideally, Host sends the initial state fully. 
-              // But for now, we just tell clients to start.
-              
-              // To ensure sync, let's create a main deck here indices or relay what Host sent.
-              // Simplified: We assume clients know the deck or we send an RNG seed. 
-              // Better: Server deals hands from the deck it has.
-              
-              // Re-create main deck (simplified) or use one passed in init?
-              // We rely on the fact that we stored nothing complex.
-              
-              // Creating a simple deck of IDs to send? 
-              // Actually, looking at previous code, init_game_setup sent a full mainDeck.
-              // Let's use that if available, else empty.
-              
-              // SERVER DOES NOT HOLD GAME STATE LOGIC ANYMORE.
-              // IT JUST RELAYS. 
-              // HOWEVER, for initial deal, we need to send hands to avoid cheating visibility.
-              
-              // We'll rely on the existing mainDeck stored in init
-              // Deal 6 to each
               const p1Hand = [];
               const p2Hand = [];
-              // We need to re-init mainDeck because we didn't save it in the simplified version above?
-              // Wait, we didn't save mainDeck in the new `init_game_setup`.
-              // We should fix that.
-              
-              // But wait, the prompt asks for 1:1 logic.
-              // The safest way is to let the clients handle it, but dealing needs to be synchronized.
-              // Let's stick to the previous pattern: Server deals from the deck it got in Init.
-          }, 2000);
-      }
-  });
-  
-  // FIX: Restore deck storage in init
-  socket.on('init_game_setup', ({ roomId, kingDeck, mainDeck, initialStats }) => {
-      // ... existing code ...
-      // ADD THIS BACK:
-      const room = rooms[roomId];
-      room.mainDeck = shuffle([...mainDeck]);
-      // ...
-  });
-  
-  // RE-IMPLEMENT select_king_card with proper deck management
-  socket.removeAllListeners('select_king_card'); // Avoid dupes if hot reloading
-  socket.on('select_king_card', ({ roomId, card }) => {
-      const room = rooms[roomId];
-      if (!room) return;
-      const isP1 = room.p1 && room.p1.id === socket.id;
-
-      if (isP1) {
-          room.kingDeck = room.kingDeck.filter(c => c.id !== card.id);
-          room.kingDeck = shuffle(room.kingDeck);
-          io.to(roomId).emit('king_selection_update', {
-              phase: 'P2_CHOOSING',
-              options: room.kingDeck.slice(0, 3),
-              lastSelected: { card, player: 'p1' },
-              p1Kings: [card], p2Kings: []
-          });
-      } else {
-          // P2 Selected
-          io.to(roomId).emit('king_selection_update', {
-              phase: 'DONE',
-              lastSelected: { card, player: 'p2' },
-              p1Kings: [], p2Kings: [card]
-          });
-          
-          // START GAME
-          setTimeout(() => {
-              const p1Hand = [];
-              const p2Hand = [];
-              // Add King Power cards before dealing?
-              // Local logic: Main Deck -> Deal 6 -> Insert King Powers -> Shuffle -> Play
-              // We will just deal 6 from current deck, then insert King Powers into Deck
               
               for(let i=0; i<6; i++) {
                   if(room.mainDeck.length) p1Hand.push(room.mainDeck.shift());
                   if(room.mainDeck.length) p2Hand.push(room.mainDeck.shift());
               }
               
-              // Insert King Powers (id 42)
               const kp = { id: 42, name: "KING POWER", type: 2, costB: 0, costW: 0, costC: 0, desc: "UNLOCK A PASSIVE BONUS", img: "👑", count: 1 };
               for(let k=0; k<4; k++) room.mainDeck.push({ ...kp, uniqueId: Math.random().toString() });
               room.mainDeck = shuffle(room.mainDeck);
@@ -274,7 +199,10 @@ io.on('connection', (socket) => {
                   p1Hand, p2Hand,
                   deckCount: room.mainDeck.length,
                   p1Nickname: room.p1.nickname,
-                  p2Nickname: room.p2.nickname
+                  p2Nickname: room.p2.nickname,
+                  // IMPORTANT: Send King Cards back to confirm state
+                  p1Kings: room.p1KingCards,
+                  p2Kings: room.p2KingCards
               });
           }, 2000);
       }
@@ -284,19 +212,10 @@ io.on('connection', (socket) => {
       const room = rooms[roomId];
       if (!room) return;
 
-      // CLIENT IS AUTHORITY. WE JUST BROADCAST.
-      // Payload contains: newP1Stats, newP2Stats, logs, card, etc.
-      
       // Update server state for reconnects
       if (payload.newP1Stats) room.p1Stats = payload.newP1Stats;
       if (payload.newP2Stats) room.p2Stats = payload.newP2Stats;
       
-      // Handle Deck changes if card drawn/discarded
-      // This is tricky if client manages deck. 
-      // For simplicity in this specific "fix it now" request, we assume infinite deck or client didn't send deck.
-      // We will just decrement deck count if needed or rely on client sync.
-      
-      // Actually, standard play recycles card to bottom.
       if (action === 'PLAY_CARD' || action === 'DISCARD_CARD') {
           // Recycle
           if (payload.card) {
@@ -304,9 +223,6 @@ io.on('connection', (socket) => {
           }
       }
       
-      // Broadcast to EVERYONE in room (including sender, to confirm receipt, 
-      // OR sender updates optimistically and ignores this if timestamp matches? 
-      // Frontend handles avoiding double-play via 'turn' check).
       io.to(roomId).emit('state_sync', {
           p1Stats: payload.newP1Stats,
           p2Stats: payload.newP2Stats,
