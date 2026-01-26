@@ -1,3 +1,4 @@
+
 import express from 'express';
 import http from 'http';
 import { Server } from 'socket.io';
@@ -109,12 +110,15 @@ io.on('connection', (socket) => {
 
   // --- HERNÍ LOGIKA ---
 
-  // Odeslání akce (animace)
+  // Odeslání akce (animace, END_TURN)
   socket.on('game_action', ({ roomId, action }) => {
+    if (action.type === 'END_TURN') {
+        console.log(`[${roomId}] Turn Ended by ${socket.id}`);
+    }
     socket.to(roomId).emit('opponent_action', action);
   });
 
-  // SYNCHRONIZACE STAVU (Přesunuto z klienta na server stylem "Authoritative Broadcast")
+  // SYNCHRONIZACE STAVU (Authoritative Broadcast)
   socket.on('game_sync', ({ roomId, p1Stats, p2Stats, turnCounts }) => {
       // Pošle nové statistiky druhému hráči
       socket.to(roomId).emit('game_sync_update', { p1Stats, p2Stats, turnCounts });
