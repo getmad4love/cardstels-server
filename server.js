@@ -133,7 +133,6 @@ io.on('connection', (socket) => {
           room.p2Stats = { ...initialStats };
           room.p1KingCards = []; // Reset King Cards
           room.p2KingCards = [];
-          room.turn = 'p1'; // Reset turn on init
           
           const options = room.kingDeck.slice(0, 3);
           
@@ -213,9 +212,6 @@ io.on('connection', (socket) => {
       const room = rooms[roomId];
       if (!room) return;
 
-      const playerRole = (room.p1.id === socket.id ? 'p1' : (room.p2 && room.p2.id === socket.id ? 'p2' : null));
-      if (!playerRole) return;
-
       // Update server state for reconnects
       if (payload.newP1Stats) room.p1Stats = payload.newP1Stats;
       if (payload.newP2Stats) room.p2Stats = payload.newP2Stats;
@@ -227,39 +223,32 @@ io.on('connection', (socket) => {
           }
       }
       
-      // CRITICAL: Only switch turn if the ACTIVE player ends their turn
-      if (action === 'END_TURN') {
-          if (playerRole === room.turn) {
-              room.turn = (room.turn === 'p1' ? 'p2' : 'p1');
-          } else {
-              console.warn(`[SERVER] Ignore END_TURN from inactive player ${playerRole}`);
-              return; // Do not broadcast invalid turn ending
-          }
-      }
-      
       io.to(roomId).emit('state_sync', {
           p1Stats: payload.newP1Stats,
           p2Stats: payload.newP2Stats,
-          turn: room.turn,
+          turn: action === 'END_TURN' ? (room.turn === 'p1' ? 'p2' : 'p1') : room.turn,
           deckCount: room.mainDeck.length,
-          event: { type: action, cardId: payload.card?.id, player: playerRole },
+          event: { type: action, cardId: payload.card?.id, player: (room.p1.id === socket.id ? 'p1' : 'p2') },
           logs: payload.logs,
+          // CRITICAL FIX: Send names to keep clients synced if they refresh
           p1Nickname: room.p1 ? room.p1.nickname : "PLAYER 1",
           p2Nickname: room.p2 ? room.p2.nickname : "PLAYER 2"
       });
+      
+      if (action === 'END_TURN') {
+          room.turn = (room.turn === 'p1' ? 'p2' : 'p1');
+      }
   });
   
   socket.on('draw_card_req', ({ roomId }) => {
       const room = rooms[roomId];
       if(!room) return;
-      
-      // Validation: Can only draw if it's your turn OR you just ended your turn (server handles this loosely for now)
+      const isP1 = room.p1.id === socket.id;
       
       if (room.mainDeck.length > 0) {
           const card = room.mainDeck.shift();
-          const playerRole = (room.p1.id === socket.id ? 'p1' : 'p2');
-          socket.emit('player_drew', { card, role: playerRole });
-          socket.broadcast.to(roomId).emit('player_drew', { card: null, role: playerRole });
+          socket.emit('card_drawn', { card });
+          socket.broadcast.to(roomId).emit('opponent_drew_card');
           io.to(roomId).emit('deck_count_update', room.mainDeck.length);
       }
   });
