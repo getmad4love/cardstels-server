@@ -201,12 +201,12 @@ io.on('connection', (socket) => {
       });
   });
 
-  // --- NEW: SHUFFLE LOGIC ---
+  // --- SHUFFLE LOGIC ---
   socket.on('shuffle_king_deck', ({ roomId }) => {
       const room = rooms[roomId];
       if (!room) return;
       
-      const isP1 = room.p1.id === socket.id;
+      const isP1 = room.p1 && room.p1.id === socket.id;
       const role = isP1 ? 'p1' : 'p2';
       
       // Check if it's correct phase and player has shuffles left
@@ -324,8 +324,6 @@ io.on('connection', (socket) => {
           newCard = room.mainDeck.shift();
           
           // Madness Consumption Logic (Server-side)
-          // If the player requested draw with active madness, we flag the card for the client
-          // and reset the madness state in server stats
           let isMadnessDraw = false;
           if (isP1) {
               if (room.p1Stats.madnessActive) {
