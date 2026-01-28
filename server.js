@@ -79,7 +79,8 @@ io.on('connection', (socket) => {
       p1Stats: null,
       p2Stats: null,
       turn: 'p1',
-      kingSelection: { phase: 'IDLE', availableOptions: [] }
+      // Fix: Initialize shufflesLeft here too for safety
+      kingSelection: { phase: 'IDLE', availableOptions: [], shufflesLeft: 1 }
     };
     
     console.log(`[LOBBY] Room ${roomId} created.`);
@@ -174,15 +175,8 @@ io.on('connection', (socket) => {
       console.log(`[GAME] Init Game Setup Request for ${roomId} from ${socket.id}`);
       const room = rooms[roomId];
       
-      if (!room) {
-          console.error(`[GAME] Room ${roomId} not found for init.`);
-          return;
-      }
-      
-      if (room.p1.id !== socket.id) {
-          console.error(`[GAME] Unauthorized init request. Socket ${socket.id} is not Host ${room.p1.id}.`);
-          return; 
-      }
+      if (!room) return;
+      if (room.p1.id !== socket.id) return; 
 
       console.log(`[GAME] Starting King Selection for ${roomId}`);
       room.gameState = 'KING_SELECTION';
@@ -195,13 +189,15 @@ io.on('connection', (socket) => {
       
       // Phase 1: P1 Choosing
       const options = room.kingDeck.slice(0, 3);
-      room.kingSelection = { phase: 'P1_CHOOSING', availableOptions: options };
+      // Fix: Ensure shufflesLeft is 1
+      room.kingSelection = { phase: 'P1_CHOOSING', availableOptions: options, shufflesLeft: 1 };
 
       io.to(roomId).emit('king_selection_update', {
           phase: 'P1_CHOOSING',
           options: options,
           p1Kings: [],
-          p2Kings: []
+          p2Kings: [],
+          shufflesLeft: 1
       });
   });
 
@@ -212,19 +208,19 @@ io.on('connection', (socket) => {
       // Determine whose turn it is to shuffle
       let isP1 = room.p1.id === socket.id;
       
-      if ((isP1 && room.kingSelection.phase === 'P1_CHOOSING') || (!isP1 && room.kingSelection.phase === 'P2_CHOOSING')) {
-          // Reshuffle the current options back into the deck (excluding already picked)
-          // Actually, just shuffle the whole unused deck and pick 3 new ones
+      if (((isP1 && room.kingSelection.phase === 'P1_CHOOSING') || (!isP1 && room.kingSelection.phase === 'P2_CHOOSING')) && room.kingSelection.shufflesLeft > 0) {
           room.kingDeck = shuffle(room.kingDeck);
           const newOptions = room.kingDeck.slice(0, 3);
           room.kingSelection.availableOptions = newOptions;
+          room.kingSelection.shufflesLeft = 0; // Consume shuffle
           
           io.to(roomId).emit('king_selection_update', {
               phase: room.kingSelection.phase,
               options: newOptions,
               p1Kings: room.p1KingCards,
               p2Kings: room.p2KingCards,
-              shuffled: true
+              shuffled: true,
+              shufflesLeft: 0
           });
       }
   });
@@ -234,7 +230,6 @@ io.on('connection', (socket) => {
       if (!room) return;
 
       const isP1 = room.p1 && room.p1.id === socket.id;
-      console.log(`[GAME] Card Selected in ${roomId}: ${card.name} by ${isP1 ? 'P1' : 'P2'}`);
       
       if (isP1 && room.kingSelection.phase === 'P1_CHOOSING') {
           room.p1KingCards.push(card);
@@ -246,20 +241,20 @@ io.on('connection', (socket) => {
           if(card.id === 'k_ind') { room.p1Stats.prodBricks++; room.p1Stats.prodWeapons++; room.p1Stats.prodCrystals++; room.p1Stats.bricks=10; room.p1Stats.weapons=10; room.p1Stats.crystals=10; }
 
           room.kingDeck = room.kingDeck.filter(c => !room.kingSelection.availableOptions.find(o => o.id === c.id));
-          // Don't shuffle yet, wait for P2 phase to init logic
-          // room.kingDeck = shuffle(room.kingDeck); 
           
-          // Re-shuffle for P2 to ensure freshness
+          // Re-shuffle for P2
           room.kingDeck = shuffle(room.kingDeck);
           const options = room.kingDeck.slice(0, 3);
-          room.kingSelection = { phase: 'P2_CHOOSING', availableOptions: options };
+          // Fix: Reset shuffle for P2
+          room.kingSelection = { phase: 'P2_CHOOSING', availableOptions: options, shufflesLeft: 1 };
 
           io.to(roomId).emit('king_selection_update', {
               phase: 'P2_CHOOSING',
               options: options,
               lastSelected: { card, player: 'p1' },
               p1Kings: room.p1KingCards,
-              p2Kings: room.p2KingCards
+              p2Kings: room.p2KingCards,
+              shufflesLeft: 1
           });
 
       } else if (!isP1 && room.kingSelection.phase === 'P2_CHOOSING') {
@@ -352,6 +347,8 @@ io.on('connection', (socket) => {
           } else {
               room.p2Hand = room.p2Hand.filter(c => c.uniqueId !== payload.card.uniqueId);
           }
+          
+          // Fix: Ensure we don't duplicate cards if client re-sends
           room.mainDeck.push({ ...payload.card, uniqueId: Math.random().toString() });
 
           io.to(roomId).emit('state_sync', {
@@ -361,7 +358,7 @@ io.on('connection', (socket) => {
               deckCount: room.mainDeck.length,
               event: { type: action, cardId: payload.card.id, player: playerRole, cardDesc: payload.card.desc, cardType: payload.card.type },
               logs: payload.logs,
-              p1KingCards: room.p1KingCards, // Ensure Kings are synced
+              p1KingCards: room.p1KingCards, 
               p2KingCards: room.p2KingCards
           });
       }
@@ -381,25 +378,6 @@ io.on('connection', (socket) => {
               p1KingCards: room.p1KingCards,
               p2KingCards: room.p2KingCards
           });
-      }
-  });
-
-  socket.on('request_rematch', ({ roomId }) => {
-      const room = rooms[roomId];
-      if (!room) return;
-      
-      const isP1 = room.p1.id === socket.id;
-      if (isP1) room.p1.rematch = true;
-      else room.p2.rematch = true;
-      
-      io.to(roomId).emit('rematch_update', { p1: !!room.p1.rematch, p2: !!room.p2.rematch });
-      
-      if (room.p1.rematch && room.p2.rematch) {
-          room.p1.rematch = false;
-          room.p2.rematch = false;
-          // Restart to King Selection
-          // Reuse deck shuffling from init logic
-          io.to(roomId).emit('game_restart');
       }
   });
 
