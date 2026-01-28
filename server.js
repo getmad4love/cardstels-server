@@ -17,23 +17,47 @@ const io = new Server(server, {
 
 const rooms = {};
 
-// Helper to shuffle array
+// Helper to shuffle array (Fisher-Yates)
 const shuffle = (array) => {
-    for (let i = array.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [array[i], array[j]] = [array[j], array[i]];
+    if (!array || !Array.isArray(array)) return [];
+    let currentIndex = array.length, randomIndex;
+    while (currentIndex !== 0) {
+        randomIndex = Math.floor(Math.random() * currentIndex);
+        currentIndex--;
+        [array[currentIndex], array[randomIndex]] = [array[randomIndex], array[currentIndex]];
     }
     return array;
 };
 
 io.on('connection', (socket) => {
-  console.log('User connected:', socket.id);
+  console.log(`[SOCKET] User connected: ${socket.id}`);
 
   // --- LOBBY LOGIC ---
 
-  socket.on('create_room', (roomId) => {
+  socket.on('create_room', ({ roomId, nickname, colorId }) => {
+    console.log(`[LOBBY] Create Room Request: ${roomId} by ${nickname} (${socket.id})`);
+    
     if (rooms[roomId]) {
-      socket.emit('error', 'Room already exists');
+      // Reconnect Logic for Host
+      const room = rooms[roomId];
+      console.log(`[LOBBY] Room ${roomId} exists. Updating host.`);
+      
+      // Update host info on reconnect
+      room.p1.id = socket.id;
+      room.p1.nickname = nickname; // Sync nickname if changed
+      room.p1.colorId = colorId;
+      
+      socket.join(roomId);
+      socket.emit('room_created', roomId);
+      io.to(roomId).emit('lobby_update', { p1: room.p1, p2: room.p2 });
+      
+      if (room.gameState !== 'LOBBY') {
+         socket.emit('state_sync', { 
+             p1Stats: room.p1Stats, p2Stats: room.p2Stats,
+             turn: room.turn,
+             deckCount: room.mainDeck.length
+         });
+      }
       return;
     }
     
@@ -41,171 +65,292 @@ io.on('connection', (socket) => {
     
     rooms[roomId] = {
       id: roomId,
-      p1: { id: socket.id, nickname: 'PLAYER 1', colorId: 0, isReady: false, role: 'p1' },
+      p1: { id: socket.id, nickname: nickname || 'PLAYER 1', colorId: colorId || 0, isReady: false, role: 'p1' },
       p2: null,
-      gameState: 'LOBBY', // LOBBY, PLAYING, ENDED
-      // Game Data
-      deck: [],
+      gameState: 'LOBBY', 
+      mainDeck: [],
+      kingDeck: [],
       p1Hand: [],
       p2Hand: [],
+      p1KingCards: [],
+      p2KingCards: [],
       p1Stats: null,
       p2Stats: null,
       turn: 'p1',
-      logs: [],
-      turnCount: 1
+      kingSelection: { phase: 'IDLE', availableOptions: [] }
     };
     
-    console.log(`Room ${roomId} created by ${socket.id}`);
+    console.log(`[LOBBY] Room ${roomId} created.`);
     socket.emit('room_created', roomId);
     io.to(roomId).emit('lobby_update', { p1: rooms[roomId].p1, p2: rooms[roomId].p2 });
   });
 
-  socket.on('join_room', (roomId) => {
+  socket.on('join_room', ({ roomId, nickname, colorId }) => {
+    console.log(`[LOBBY] Join Room Request: ${roomId} by ${nickname} (${socket.id})`);
     const room = rooms[roomId];
-    
-    if (!room) {
-      socket.emit('error', 'Room not found');
-      return;
+    if (!room) { 
+        console.log(`[LOBBY] Room ${roomId} not found.`);
+        socket.emit('error', 'Room not found'); 
+        return; 
     }
     
     if (room.p2) {
-      socket.emit('error', 'Room is full');
-      return;
+        // Reconnect Logic for P2
+        // We assume same nickname means same player for simplicity in this context
+        if (room.p2.nickname === nickname || true) { // Allow overwrite for now to fix connection issues
+            console.log(`[LOBBY] P2 Reconnected/Updated in Room ${roomId}`);
+            room.p2.id = socket.id;
+            room.p2.nickname = nickname;
+            room.p2.colorId = colorId;
+            
+            socket.join(roomId);
+            io.to(roomId).emit('lobby_update', { p1: room.p1, p2: room.p2 });
+            
+            if (room.gameState !== 'LOBBY') {
+                socket.emit('state_sync', { 
+                    p1Stats: room.p1Stats, p2Stats: room.p2Stats,
+                    turn: room.turn,
+                    deckCount: room.mainDeck.length
+                });
+            }
+        }
+        return;
     }
 
     socket.join(roomId);
-    
-    // Assign different color to P2 if needed
-    let p2Color = 1;
-    if (room.p1.colorId === 1) p2Color = 0;
+    let finalColor = colorId || 1;
+    if (room.p1 && room.p1.colorId === finalColor) finalColor = (finalColor + 1) % 8;
 
-    room.p2 = { id: socket.id, nickname: 'PLAYER 2', colorId: p2Color, isReady: false, role: 'p2' };
-    
-    console.log(`User ${socket.id} joined ${roomId}`);
+    room.p2 = { id: socket.id, nickname: nickname || 'PLAYER 2', colorId: finalColor, isReady: false, role: 'p2' };
+    console.log(`[LOBBY] P2 Joined Room ${roomId}`);
     io.to(roomId).emit('lobby_update', { p1: room.p1, p2: room.p2 });
   });
 
-  socket.on('update_player_info', ({ roomId, nickname, colorId }) => {
-    const room = rooms[roomId];
-    if (!room) return;
-
-    let target = null;
-    if (room.p1 && room.p1.id === socket.id) target = room.p1;
-    else if (room.p2 && room.p2.id === socket.id) target = room.p2;
-
-    if (target) {
-        target.nickname = nickname.substring(0, 12).toUpperCase(); 
-        target.colorId = colorId;
-        io.to(roomId).emit('lobby_update', { p1: room.p1, p2: room.p2 });
-    }
+  socket.on('update_lobby_settings', ({ roomId, nickname, colorId }) => {
+      const room = rooms[roomId];
+      if (!room) return;
+      let target = (room.p1 && room.p1.id === socket.id) ? room.p1 : (room.p2 && room.p2.id === socket.id ? room.p2 : null);
+      if (target) {
+          if (nickname !== undefined) target.nickname = nickname.substring(0, 12).toUpperCase();
+          if (colorId !== undefined) target.colorId = colorId;
+          if (room.p1) room.p1.isReady = false;
+          if (room.p2) room.p2.isReady = false;
+          io.to(roomId).emit('lobby_update', { p1: room.p1, p2: room.p2 });
+      }
   });
 
   socket.on('toggle_ready', ({ roomId, isReady }) => {
       const room = rooms[roomId];
       if (!room) return;
-
       if (room.p1 && room.p1.id === socket.id) room.p1.isReady = isReady;
       else if (room.p2 && room.p2.id === socket.id) room.p2.isReady = isReady;
-
       io.to(roomId).emit('lobby_update', { p1: room.p1, p2: room.p2 });
   });
 
-  // --- GAME START & SYNC ---
-
-  socket.on('start_game_request', ({ roomId, initialDeck, initialStats }) => {
+  socket.on('lobby_chat', ({ roomId, message }) => {
       const room = rooms[roomId];
-      if (!room || !room.p1 || !room.p2) return;
-      if (room.p1.id !== socket.id) return; // Only host starts
-      if (!room.p1.isReady || !room.p2.isReady) return; 
-
-      room.gameState = 'PLAYING';
-      
-      // Initialize Game State
-      room.deck = shuffle([...initialDeck]);
-      room.p1Stats = { ...initialStats };
-      room.p2Stats = { ...initialStats };
-      
-      // Deal Hands (6 cards each)
-      room.p1Hand = room.deck.splice(0, 6);
-      room.p2Hand = room.deck.splice(0, 6);
-      
-      room.turn = 'p1';
-      room.turnCount = 1;
-
-      io.to(roomId).emit('game_start', {
-          p1: room.p1,
-          p2: room.p2,
-          p1Stats: room.p1Stats,
-          p2Stats: room.p2Stats,
-          turn: room.turn,
-          // Send specific hands only to specific players via client-side logic handling or separate emits
-          // For simplicity in this structure, we send full state and client filters views, 
-          // or we can emit strictly (better for anti-cheat, but focusing on functionality first)
-      });
-      
-      // Send specific hands
-      io.to(room.p1.id).emit('hand_update', room.p1Hand);
-      io.to(room.p2.id).emit('hand_update', room.p2Hand);
+      if (!room) return;
+      let sender = (room.p1 && room.p1.id === socket.id) ? room.p1 : (room.p2 && room.p2.id === socket.id ? room.p2 : null);
+      if (sender) {
+          io.to(roomId).emit('chat_message', { text: message.substring(0, 32), senderName: sender.nickname, colorId: sender.colorId });
+      }
   });
 
-  // --- GAME ACTIONS ---
+  // --- GAME LOGIC ---
 
-  socket.on('game_action_sync', ({ roomId, newState, event, log }) => {
+  socket.on('init_game_setup', ({ roomId, kingDeck, mainDeck, initialStats }) => {
+      console.log(`[GAME] Init Game Setup Request for ${roomId} from ${socket.id}`);
+      const room = rooms[roomId];
+      
+      if (!room) {
+          console.error(`[GAME] Room ${roomId} not found for init.`);
+          return;
+      }
+      
+      if (room.p1.id !== socket.id) {
+          console.error(`[GAME] Unauthorized init request. Socket ${socket.id} is not Host ${room.p1.id}.`);
+          // Attempt to fix sync if it's the host but ID changed and reconnect logic failed
+          return; 
+      }
+
+      console.log(`[GAME] Starting King Selection for ${roomId}`);
+      room.gameState = 'KING_SELECTION';
+      room.mainDeck = shuffle([...mainDeck]);
+      room.kingDeck = shuffle([...kingDeck]);
+      room.p1Stats = { ...initialStats };
+      room.p2Stats = { ...initialStats };
+      room.p1KingCards = [];
+      room.p2KingCards = [];
+      
+      // Phase 1: P1 Choosing
+      const options = room.kingDeck.slice(0, 3);
+      room.kingSelection = { phase: 'P1_CHOOSING', availableOptions: options };
+
+      io.to(roomId).emit('king_selection_update', {
+          phase: 'P1_CHOOSING',
+          options: options,
+          p1Kings: [],
+          p2Kings: []
+      });
+  });
+
+  socket.on('select_king_card', ({ roomId, card }) => {
       const room = rooms[roomId];
       if (!room) return;
 
-      // Update Server State with the state calculated by the active client
-      // This is "Client Authoritative" for logic, "Server Authoritative" for storage/broadcast
-      if (newState.p1Stats) room.p1Stats = newState.p1Stats;
-      if (newState.p2Stats) room.p2Stats = newState.p2Stats;
-      if (newState.deck) room.deck = newState.deck;
-      if (newState.p1Hand) room.p1Hand = newState.p1Hand;
-      if (newState.p2Hand) room.p2Hand = newState.p2Hand;
-      if (newState.turn) room.turn = newState.turn;
+      const isP1 = room.p1 && room.p1.id === socket.id;
+      console.log(`[GAME] Card Selected in ${roomId}: ${card.name} by ${isP1 ? 'P1' : 'P2'}`);
       
-      // Broadcast update to everyone
-      io.to(roomId).emit('state_sync', {
-          p1Stats: room.p1Stats,
-          p2Stats: room.p2Stats,
-          turn: room.turn,
-          event: event, // Animation triggers (projectile, card play visual)
-          log: log      // Console log message
-      });
+      if (isP1 && room.kingSelection.phase === 'P1_CHOOSING') {
+          room.p1KingCards.push(card);
+          // Apply King Stats Modifiers
+          if(card.id === 'k_big') room.p1Stats.king = 60;
+          if(card.id === 'k_son') { room.p1Stats.wall = 40; room.p1Stats.tower = 40; room.p1Stats.king = 20; }
+          if(card.id === 'k_bunk') { room.p1Stats.wall = 60; room.p1Stats.tower = 10; room.p1Stats.king = 1; }
+          if(card.id === 'k_hoard') { room.p1Stats.bricks += 30; room.p1Stats.weapons += 30; room.p1Stats.crystals += 30; }
+          if(card.id === 'k_ind') { room.p1Stats.prodBricks++; room.p1Stats.prodWeapons++; room.p1Stats.prodCrystals++; room.p1Stats.bricks=10; room.p1Stats.weapons=10; room.p1Stats.crystals=10; }
 
-      // Update private hands
-      if (room.p1) io.to(room.p1.id).emit('hand_update', room.p1Hand);
-      if (room.p2) io.to(room.p2.id).emit('hand_update', room.p2Hand);
+          // Remove selected and options from deck to prevent duplicates, shuffle rest
+          room.kingDeck = room.kingDeck.filter(c => !room.kingSelection.availableOptions.find(o => o.id === c.id));
+          room.kingDeck = shuffle(room.kingDeck); 
+          
+          const options = room.kingDeck.slice(0, 3);
+          room.kingSelection = { phase: 'P2_CHOOSING', availableOptions: options };
+
+          io.to(roomId).emit('king_selection_update', {
+              phase: 'P2_CHOOSING',
+              options: options,
+              lastSelected: { card, player: 'p1' },
+              p1Kings: room.p1KingCards,
+              p2Kings: room.p2KingCards
+          });
+
+      } else if (!isP1 && room.kingSelection.phase === 'P2_CHOOSING') {
+          room.p2KingCards.push(card);
+          // Apply King Stats Modifiers P2
+          if(card.id === 'k_big') room.p2Stats.king = 60;
+          if(card.id === 'k_son') { room.p2Stats.wall = 40; room.p2Stats.tower = 40; room.p2Stats.king = 20; }
+          if(card.id === 'k_bunk') { room.p2Stats.wall = 60; room.p2Stats.tower = 10; room.p2Stats.king = 1; }
+          if(card.id === 'k_hoard') { room.p2Stats.bricks += 30; room.p2Stats.weapons += 30; room.p2Stats.crystals += 30; }
+          if(card.id === 'k_ind') { room.p2Stats.prodBricks++; room.p2Stats.prodWeapons++; room.p2Stats.prodCrystals++; room.p2Stats.bricks=10; room.p2Stats.weapons=10; room.p2Stats.crystals=10; }
+
+          room.gameState = 'DEALING';
+          room.turn = 'p1';
+          
+          // Deal initial hands
+          room.p1Hand = [];
+          room.p2Hand = [];
+          for(let i=0; i<6; i++) {
+              if(room.mainDeck.length > 0) room.p1Hand.push(room.mainDeck.shift());
+              if(room.mainDeck.length > 0) room.p2Hand.push(room.mainDeck.shift());
+          }
+
+          // Insert King Powers into deck then shuffle
+          const kingPowerCard = { id: 42, name: "KING POWER", type: 2, costB: 0, costW: 0, costC: 0, desc: "UNLOCK A PASSIVE BONUS", img: "👑", count: 1 };
+          for(let k=0; k<4; k++) room.mainDeck.push({ ...kingPowerCard, uniqueId: Math.random().toString(36).substr(2, 9) });
+          room.mainDeck = shuffle(room.mainDeck);
+
+          io.to(roomId).emit('king_selection_update', {
+              phase: 'DONE',
+              lastSelected: { card, player: 'p2' },
+              p1Kings: room.p1KingCards,
+              p2Kings: room.p2KingCards
+          });
+
+          // Trigger Dealing Sequence
+          setTimeout(() => {
+              console.log(`[GAME] Starting Dealing Sequence for ${roomId}`);
+              io.to(roomId).emit('start_dealing_sequence', {
+                  p1Stats: room.p1Stats,
+                  p2Stats: room.p2Stats,
+                  p1Hand: room.p1Hand,
+                  p2Hand: room.p2Hand,
+                  deckCount: room.mainDeck.length,
+                  p1Nickname: room.p1.nickname,
+                  p2Nickname: room.p2.nickname
+              });
+          }, 2000);
+      }
   });
 
-  socket.on('chat_message', ({ roomId, message, color }) => {
-    io.to(roomId).emit('chat_message', { 
-      text: message, 
-      senderId: socket.id, 
-      color 
-    });
+  socket.on('draw_card_req', ({ roomId }) => {
+      const room = rooms[roomId];
+      if(!room) return;
+      
+      const isP1 = room.p1.id === socket.id;
+      let newCard = null;
+      if (room.mainDeck.length > 0) {
+          newCard = room.mainDeck.shift();
+          if (isP1) room.p1Hand.push(newCard);
+          else room.p2Hand.push(newCard);
+          
+          // Send private draw
+          socket.emit('card_drawn', { card: newCard });
+          // Notify opponent
+          socket.broadcast.to(roomId).emit('opponent_drew_card');
+          // Update deck count
+          io.to(roomId).emit('deck_count_update', room.mainDeck.length);
+      }
+  });
+
+  socket.on('game_action', ({ roomId, action, payload }) => {
+      const room = rooms[roomId];
+      if (!room) return;
+
+      const isP1 = room.p1 && room.p1.id === socket.id;
+      const playerRole = isP1 ? 'p1' : 'p2';
+
+      if (action === 'PLAY_CARD' || action === 'DISCARD_CARD') {
+          room.p1Stats = payload.newP1Stats;
+          room.p2Stats = payload.newP2Stats;
+          
+          if (isP1) {
+              room.p1Hand = room.p1Hand.filter(c => c.uniqueId !== payload.card.uniqueId);
+          } else {
+              room.p2Hand = room.p2Hand.filter(c => c.uniqueId !== payload.card.uniqueId);
+          }
+          // Add back to bottom
+          room.mainDeck.push({ ...payload.card, uniqueId: Math.random().toString() });
+
+          io.to(roomId).emit('state_sync', {
+              p1Stats: room.p1Stats,
+              p2Stats: room.p2Stats,
+              turn: room.turn,
+              deckCount: room.mainDeck.length,
+              event: { type: action, cardId: payload.card.id, player: playerRole },
+              logs: payload.logs
+          });
+      }
+
+      if (action === 'END_TURN') {
+          room.p1Stats = payload.newP1Stats;
+          room.p2Stats = payload.newP2Stats;
+          room.turn = isP1 ? 'p2' : 'p1';
+          
+          io.to(roomId).emit('state_sync', {
+              p1Stats: room.p1Stats,
+              p2Stats: room.p2Stats,
+              turn: room.turn,
+              deckCount: room.mainDeck.length,
+              event: { type: 'END_TURN', player: playerRole },
+              logs: payload.logs
+          });
+      }
   });
 
   socket.on('disconnect', () => {
-    console.log('User disconnected:', socket.id);
+    console.log(`[SOCKET] Disconnected: ${socket.id}`);
     for (const roomId in rooms) {
-      const room = rooms[roomId];
-      if ((room.p1 && room.p1.id === socket.id) || (room.p2 && room.p2.id === socket.id)) {
-        
-        if (room.gameState === 'PLAYING') {
-            io.to(roomId).emit('opponent_disconnected');
+        const room = rooms[roomId];
+        if (room.p1 && room.p1.id === socket.id) {
+            console.log(`[LOBBY] Host disconnected from ${roomId}`);
+            io.to(roomId).emit('host_left');
             delete rooms[roomId];
-        } else {
-            if (room.p1 && room.p1.id === socket.id) {
-                // Host left, close room
-                io.to(roomId).emit('opponent_disconnected');
-                delete rooms[roomId];
-            } else {
-                // Guest left
-                room.p2 = null;
-                io.to(roomId).emit('lobby_update', { p1: room.p1, p2: null });
-            }
+        } else if (room.p2 && room.p2.id === socket.id) {
+            console.log(`[LOBBY] P2 disconnected from ${roomId}`);
+            io.to(roomId).emit('opponent_disconnected');
+            room.p2 = null; 
         }
-      }
     }
   });
 });
