@@ -79,7 +79,7 @@ io.on('connection', (socket) => {
       p1Stats: null,
       p2Stats: null,
       turn: 'p1',
-      // Fix: Initialize shufflesLeft here too for safety
+      // Initialize shufflesLeft to 1
       kingSelection: { phase: 'IDLE', availableOptions: [], shufflesLeft: 1 }
     };
     
@@ -175,8 +175,15 @@ io.on('connection', (socket) => {
       console.log(`[GAME] Init Game Setup Request for ${roomId} from ${socket.id}`);
       const room = rooms[roomId];
       
-      if (!room) return;
-      if (room.p1.id !== socket.id) return; 
+      if (!room) {
+          console.error(`[GAME] Room ${roomId} not found for init.`);
+          return;
+      }
+      
+      if (room.p1.id !== socket.id) {
+          console.error(`[GAME] Unauthorized init request. Socket ${socket.id} is not Host ${room.p1.id}.`);
+          return; 
+      }
 
       console.log(`[GAME] Starting King Selection for ${roomId}`);
       room.gameState = 'KING_SELECTION';
@@ -189,15 +196,15 @@ io.on('connection', (socket) => {
       
       // Phase 1: P1 Choosing
       const options = room.kingDeck.slice(0, 3);
-      // Fix: Ensure shufflesLeft is 1
+      // Ensure shufflesLeft starts at 1
       room.kingSelection = { phase: 'P1_CHOOSING', availableOptions: options, shufflesLeft: 1 };
 
       io.to(roomId).emit('king_selection_update', {
           phase: 'P1_CHOOSING',
           options: options,
+          shufflesLeft: 1,
           p1Kings: [],
-          p2Kings: [],
-          shufflesLeft: 1
+          p2Kings: []
       });
   });
 
@@ -208,19 +215,22 @@ io.on('connection', (socket) => {
       // Determine whose turn it is to shuffle
       let isP1 = room.p1.id === socket.id;
       
-      if (((isP1 && room.kingSelection.phase === 'P1_CHOOSING') || (!isP1 && room.kingSelection.phase === 'P2_CHOOSING')) && room.kingSelection.shufflesLeft > 0) {
+      // Check if shuffle is allowed
+      if (room.kingSelection.shufflesLeft > 0 && ((isP1 && room.kingSelection.phase === 'P1_CHOOSING') || (!isP1 && room.kingSelection.phase === 'P2_CHOOSING'))) {
+          // Decrement shuffle count
+          room.kingSelection.shufflesLeft--;
+          
           room.kingDeck = shuffle(room.kingDeck);
           const newOptions = room.kingDeck.slice(0, 3);
           room.kingSelection.availableOptions = newOptions;
-          room.kingSelection.shufflesLeft = 0; // Consume shuffle
           
           io.to(roomId).emit('king_selection_update', {
               phase: room.kingSelection.phase,
               options: newOptions,
+              shufflesLeft: room.kingSelection.shufflesLeft,
               p1Kings: room.p1KingCards,
               p2Kings: room.p2KingCards,
-              shuffled: true,
-              shufflesLeft: 0
+              shuffled: true
           });
       }
   });
@@ -230,6 +240,7 @@ io.on('connection', (socket) => {
       if (!room) return;
 
       const isP1 = room.p1 && room.p1.id === socket.id;
+      console.log(`[GAME] Card Selected in ${roomId}: ${card.name} by ${isP1 ? 'P1' : 'P2'}`);
       
       if (isP1 && room.kingSelection.phase === 'P1_CHOOSING') {
           room.p1KingCards.push(card);
@@ -242,19 +253,19 @@ io.on('connection', (socket) => {
 
           room.kingDeck = room.kingDeck.filter(c => !room.kingSelection.availableOptions.find(o => o.id === c.id));
           
-          // Re-shuffle for P2
+          // Re-shuffle for P2 to ensure freshness
           room.kingDeck = shuffle(room.kingDeck);
           const options = room.kingDeck.slice(0, 3);
-          // Fix: Reset shuffle for P2
+          // Reset shuffle for P2
           room.kingSelection = { phase: 'P2_CHOOSING', availableOptions: options, shufflesLeft: 1 };
 
           io.to(roomId).emit('king_selection_update', {
               phase: 'P2_CHOOSING',
               options: options,
+              shufflesLeft: 1,
               lastSelected: { card, player: 'p1' },
               p1Kings: room.p1KingCards,
-              p2Kings: room.p2KingCards,
-              shufflesLeft: 1
+              p2Kings: room.p2KingCards
           });
 
       } else if (!isP1 && room.kingSelection.phase === 'P2_CHOOSING') {
@@ -348,8 +359,10 @@ io.on('connection', (socket) => {
               room.p2Hand = room.p2Hand.filter(c => c.uniqueId !== payload.card.uniqueId);
           }
           
-          // Fix: Ensure we don't duplicate cards if client re-sends
-          room.mainDeck.push({ ...payload.card, uniqueId: Math.random().toString() });
+          // Add card back to deck logic if needed, or handle discard pile
+          if (action === 'DISCARD_CARD' || action === 'PLAY_CARD') {
+             room.mainDeck.push({ ...payload.card, uniqueId: Math.random().toString() });
+          }
 
           io.to(roomId).emit('state_sync', {
               p1Stats: room.p1Stats,
@@ -379,6 +392,8 @@ io.on('connection', (socket) => {
               p2KingCards: room.p2KingCards
           });
       }
+      
+      // Madness reset logic (if handled server-side state, but we trust client payload for stats currently)
   });
 
   socket.on('disconnect', () => {
