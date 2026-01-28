@@ -79,8 +79,9 @@ io.on('connection', (socket) => {
       p1Stats: null,
       p2Stats: null,
       turn: 'p1',
-      // Initialize shufflesLeft to 1
-      kingSelection: { phase: 'IDLE', availableOptions: [], shufflesLeft: 1 }
+      // Store shuffle counts server-side to prevent cheating and maintain state
+      shuffles: { p1: 1, p2: 1 },
+      kingSelection: { phase: 'IDLE', availableOptions: [] }
     };
     
     console.log(`[LOBBY] Room ${roomId} created.`);
@@ -175,17 +176,9 @@ io.on('connection', (socket) => {
       console.log(`[GAME] Init Game Setup Request for ${roomId} from ${socket.id}`);
       const room = rooms[roomId];
       
-      if (!room) {
-          console.error(`[GAME] Room ${roomId} not found for init.`);
-          return;
-      }
-      
-      if (room.p1.id !== socket.id) {
-          console.error(`[GAME] Unauthorized init request. Socket ${socket.id} is not Host ${room.p1.id}.`);
-          return; 
-      }
+      if (!room) return;
+      if (room.p1.id !== socket.id) return; 
 
-      console.log(`[GAME] Starting King Selection for ${roomId}`);
       room.gameState = 'KING_SELECTION';
       room.mainDeck = shuffle([...mainDeck]);
       room.kingDeck = shuffle([...kingDeck]);
@@ -193,45 +186,53 @@ io.on('connection', (socket) => {
       room.p2Stats = { ...initialStats };
       room.p1KingCards = [];
       room.p2KingCards = [];
+      room.shuffles = { p1: 1, p2: 1 }; // Reset shuffles
       
       // Phase 1: P1 Choosing
       const options = room.kingDeck.slice(0, 3);
-      // Ensure shufflesLeft starts at 1
-      room.kingSelection = { phase: 'P1_CHOOSING', availableOptions: options, shufflesLeft: 1 };
+      room.kingSelection = { phase: 'P1_CHOOSING', availableOptions: options };
 
       io.to(roomId).emit('king_selection_update', {
           phase: 'P1_CHOOSING',
           options: options,
-          shufflesLeft: 1,
+          shufflesLeft: room.shuffles.p1,
           p1Kings: [],
           p2Kings: []
       });
   });
 
+  // --- NEW: SHUFFLE LOGIC ---
   socket.on('shuffle_king_deck', ({ roomId }) => {
       const room = rooms[roomId];
       if (!room) return;
       
-      // Determine whose turn it is to shuffle
-      let isP1 = room.p1.id === socket.id;
+      const isP1 = room.p1.id === socket.id;
+      const role = isP1 ? 'p1' : 'p2';
       
-      // Check if shuffle is allowed
-      if (room.kingSelection.shufflesLeft > 0 && ((isP1 && room.kingSelection.phase === 'P1_CHOOSING') || (!isP1 && room.kingSelection.phase === 'P2_CHOOSING'))) {
-          // Decrement shuffle count
-          room.kingSelection.shufflesLeft--;
-          
-          room.kingDeck = shuffle(room.kingDeck);
-          const newOptions = room.kingDeck.slice(0, 3);
-          room.kingSelection.availableOptions = newOptions;
-          
-          io.to(roomId).emit('king_selection_update', {
-              phase: room.kingSelection.phase,
-              options: newOptions,
-              shufflesLeft: room.kingSelection.shufflesLeft,
-              p1Kings: room.p1KingCards,
-              p2Kings: room.p2KingCards,
-              shuffled: true
-          });
+      // Check if it's correct phase and player has shuffles left
+      if (room.shuffles[role] > 0) {
+          if ((isP1 && room.kingSelection.phase === 'P1_CHOOSING') || (!isP1 && room.kingSelection.phase === 'P2_CHOOSING')) {
+              
+              // Decrement shuffle count
+              room.shuffles[role]--;
+              
+              // Shuffle remaining deck (excluding current options technically, but simple shuffle is fine for fun)
+              room.kingDeck = shuffle(room.kingDeck);
+              
+              // Draw new options
+              const newOptions = room.kingDeck.slice(0, 3);
+              room.kingSelection.availableOptions = newOptions;
+              
+              // Broadcast update
+              io.to(roomId).emit('king_selection_update', {
+                  phase: room.kingSelection.phase,
+                  options: newOptions,
+                  shufflesLeft: room.shuffles[role],
+                  p1Kings: room.p1KingCards,
+                  p2Kings: room.p2KingCards,
+                  isShuffling: true // Trigger animation on client
+              });
+          }
       }
   });
 
@@ -240,7 +241,6 @@ io.on('connection', (socket) => {
       if (!room) return;
 
       const isP1 = room.p1 && room.p1.id === socket.id;
-      console.log(`[GAME] Card Selected in ${roomId}: ${card.name} by ${isP1 ? 'P1' : 'P2'}`);
       
       if (isP1 && room.kingSelection.phase === 'P1_CHOOSING') {
           room.p1KingCards.push(card);
@@ -256,13 +256,12 @@ io.on('connection', (socket) => {
           // Re-shuffle for P2 to ensure freshness
           room.kingDeck = shuffle(room.kingDeck);
           const options = room.kingDeck.slice(0, 3);
-          // Reset shuffle for P2
-          room.kingSelection = { phase: 'P2_CHOOSING', availableOptions: options, shufflesLeft: 1 };
+          room.kingSelection = { phase: 'P2_CHOOSING', availableOptions: options };
 
           io.to(roomId).emit('king_selection_update', {
               phase: 'P2_CHOOSING',
               options: options,
-              shufflesLeft: 1,
+              shufflesLeft: room.shuffles.p2,
               lastSelected: { card, player: 'p1' },
               p1Kings: room.p1KingCards,
               p2Kings: room.p2KingCards
@@ -315,7 +314,7 @@ io.on('connection', (socket) => {
       }
   });
 
-  socket.on('draw_card_req', ({ roomId }) => {
+  socket.on('draw_card_req', ({ roomId, consumeMadness }) => {
       const room = rooms[roomId];
       if(!room) return;
       
@@ -323,12 +322,38 @@ io.on('connection', (socket) => {
       let newCard = null;
       if (room.mainDeck.length > 0) {
           newCard = room.mainDeck.shift();
-          if (isP1) room.p1Hand.push(newCard);
-          else room.p2Hand.push(newCard);
           
-          socket.emit('card_drawn', { card: newCard });
+          // Madness Consumption Logic (Server-side)
+          // If the player requested draw with active madness, we flag the card for the client
+          // and reset the madness state in server stats
+          let isMadnessDraw = false;
+          if (isP1) {
+              if (room.p1Stats.madnessActive) {
+                  room.p1Stats.madnessActive = false;
+                  isMadnessDraw = true;
+              }
+              room.p1Hand.push(newCard);
+          } else {
+              if (room.p2Stats.madnessActive) {
+                  room.p2Stats.madnessActive = false;
+                  isMadnessDraw = true;
+              }
+              room.p2Hand.push(newCard);
+          }
+          
+          socket.emit('card_drawn', { card: newCard, isMadnessDraw });
           socket.broadcast.to(roomId).emit('opponent_drew_card');
           io.to(roomId).emit('deck_count_update', room.mainDeck.length);
+          
+          // Sync stats if madness changed
+          if (isMadnessDraw) {
+              io.to(roomId).emit('state_sync', {
+                  p1Stats: room.p1Stats,
+                  p2Stats: room.p2Stats,
+                  turn: room.turn,
+                  deckCount: room.mainDeck.length
+              });
+          }
       }
   });
 
@@ -358,11 +383,7 @@ io.on('connection', (socket) => {
           } else {
               room.p2Hand = room.p2Hand.filter(c => c.uniqueId !== payload.card.uniqueId);
           }
-          
-          // Add card back to deck logic if needed, or handle discard pile
-          if (action === 'DISCARD_CARD' || action === 'PLAY_CARD') {
-             room.mainDeck.push({ ...payload.card, uniqueId: Math.random().toString() });
-          }
+          room.mainDeck.push({ ...payload.card, uniqueId: Math.random().toString() });
 
           io.to(roomId).emit('state_sync', {
               p1Stats: room.p1Stats,
@@ -392,8 +413,6 @@ io.on('connection', (socket) => {
               p2KingCards: room.p2KingCards
           });
       }
-      
-      // Madness reset logic (if handled server-side state, but we trust client payload for stats currently)
   });
 
   socket.on('disconnect', () => {
