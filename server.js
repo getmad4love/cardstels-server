@@ -155,7 +155,16 @@ io.on('connection', (socket) => {
       if (!room) return;
       let sender = (room.p1 && room.p1.id === socket.id) ? room.p1 : (room.p2 && room.p2.id === socket.id ? room.p2 : null);
       if (sender) {
-          io.to(roomId).emit('chat_message', { text: message.substring(0, 32), senderName: sender.nickname, colorId: sender.colorId });
+          io.to(roomId).emit('chat_message', { text: message.substring(0, 32), senderName: sender.nickname, colorId: sender.colorId, context: 'LOBBY' });
+      }
+  });
+
+  socket.on('chat_message', ({ roomId, message }) => {
+      const room = rooms[roomId];
+      if (!room) return;
+      let sender = (room.p1 && room.p1.id === socket.id) ? room.p1 : (room.p2 && room.p2.id === socket.id ? room.p2 : null);
+      if (sender) {
+          io.to(roomId).emit('chat_message', { text: message.substring(0, 32), senderName: sender.nickname, colorId: sender.colorId, context: 'GAME' });
       }
   });
 
@@ -196,6 +205,30 @@ io.on('connection', (socket) => {
       });
   });
 
+  socket.on('shuffle_king_deck', ({ roomId }) => {
+      const room = rooms[roomId];
+      if (!room) return;
+      
+      // Determine whose turn it is to shuffle
+      let isP1 = room.p1.id === socket.id;
+      
+      if ((isP1 && room.kingSelection.phase === 'P1_CHOOSING') || (!isP1 && room.kingSelection.phase === 'P2_CHOOSING')) {
+          // Reshuffle the current options back into the deck (excluding already picked)
+          // Actually, just shuffle the whole unused deck and pick 3 new ones
+          room.kingDeck = shuffle(room.kingDeck);
+          const newOptions = room.kingDeck.slice(0, 3);
+          room.kingSelection.availableOptions = newOptions;
+          
+          io.to(roomId).emit('king_selection_update', {
+              phase: room.kingSelection.phase,
+              options: newOptions,
+              p1Kings: room.p1KingCards,
+              p2Kings: room.p2KingCards,
+              shuffled: true
+          });
+      }
+  });
+
   socket.on('select_king_card', ({ roomId, card }) => {
       const room = rooms[roomId];
       if (!room) return;
@@ -213,8 +246,11 @@ io.on('connection', (socket) => {
           if(card.id === 'k_ind') { room.p1Stats.prodBricks++; room.p1Stats.prodWeapons++; room.p1Stats.prodCrystals++; room.p1Stats.bricks=10; room.p1Stats.weapons=10; room.p1Stats.crystals=10; }
 
           room.kingDeck = room.kingDeck.filter(c => !room.kingSelection.availableOptions.find(o => o.id === c.id));
-          room.kingDeck = shuffle(room.kingDeck); 
+          // Don't shuffle yet, wait for P2 phase to init logic
+          // room.kingDeck = shuffle(room.kingDeck); 
           
+          // Re-shuffle for P2 to ensure freshness
+          room.kingDeck = shuffle(room.kingDeck);
           const options = room.kingDeck.slice(0, 3);
           room.kingSelection = { phase: 'P2_CHOOSING', availableOptions: options };
 
