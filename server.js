@@ -40,11 +40,8 @@ io.on('connection', (socket) => {
     if (rooms[roomId]) {
       // Reconnect Logic for Host
       const room = rooms[roomId];
-      console.log(`[LOBBY] Room ${roomId} exists. Updating host.`);
-      
-      // Update host info on reconnect
       room.p1.id = socket.id;
-      room.p1.nickname = nickname; // Sync nickname if changed
+      room.p1.nickname = nickname; 
       room.p1.colorId = colorId;
       
       socket.join(roomId);
@@ -88,34 +85,29 @@ io.on('connection', (socket) => {
   });
 
   socket.on('join_room', ({ roomId, nickname, colorId }) => {
-    console.log(`[LOBBY] Join Room Request: ${roomId} by ${nickname} (${socket.id})`);
     const room = rooms[roomId];
     if (!room) { 
-        console.log(`[LOBBY] Room ${roomId} not found.`);
         socket.emit('error', 'Room not found'); 
         return; 
     }
     
     if (room.p2) {
-        // Reconnect Logic for P2
-        if (room.p2.nickname === nickname || true) { 
-            console.log(`[LOBBY] P2 Reconnected/Updated in Room ${roomId}`);
-            room.p2.id = socket.id;
-            room.p2.nickname = nickname;
-            room.p2.colorId = colorId;
-            
-            socket.join(roomId);
-            io.to(roomId).emit('lobby_update', { p1: room.p1, p2: room.p2 });
-            
-            if (room.gameState !== 'LOBBY') {
-                socket.emit('state_sync', { 
-                    p1Stats: room.p1Stats, p2Stats: room.p2Stats,
-                    turn: room.turn,
-                    deckCount: room.mainDeck.length,
-                    p1KingCards: room.p1KingCards,
-                    p2KingCards: room.p2KingCards
-                });
-            }
+        // Reconnect Logic
+        room.p2.id = socket.id;
+        room.p2.nickname = nickname;
+        room.p2.colorId = colorId;
+        
+        socket.join(roomId);
+        io.to(roomId).emit('lobby_update', { p1: room.p1, p2: room.p2 });
+        
+        if (room.gameState !== 'LOBBY') {
+            socket.emit('state_sync', { 
+                p1Stats: room.p1Stats, p2Stats: room.p2Stats,
+                turn: room.turn,
+                deckCount: room.mainDeck.length,
+                p1KingCards: room.p1KingCards,
+                p2KingCards: room.p2KingCards
+            });
         }
         return;
     }
@@ -125,7 +117,6 @@ io.on('connection', (socket) => {
     if (room.p1 && room.p1.colorId === finalColor) finalColor = (finalColor + 1) % 8;
 
     room.p2 = { id: socket.id, nickname: nickname || 'PLAYER 2', colorId: finalColor, isReady: false, role: 'p2' };
-    console.log(`[LOBBY] P2 Joined Room ${roomId}`);
     io.to(roomId).emit('lobby_update', { p1: room.p1, p2: room.p2 });
   });
 
@@ -150,41 +141,21 @@ io.on('connection', (socket) => {
       io.to(roomId).emit('lobby_update', { p1: room.p1, p2: room.p2 });
   });
 
-  socket.on('lobby_chat', ({ roomId, message }) => {
+  socket.on('chat_message', ({ roomId, message, color }) => {
       const room = rooms[roomId];
       if (!room) return;
       let sender = (room.p1 && room.p1.id === socket.id) ? room.p1 : (room.p2 && room.p2.id === socket.id ? room.p2 : null);
       if (sender) {
-          io.to(roomId).emit('chat_message', { text: message.substring(0, 32), senderName: sender.nickname, colorId: sender.colorId, context: 'LOBBY' });
-      }
-  });
-
-  socket.on('chat_message', ({ roomId, message }) => {
-      const room = rooms[roomId];
-      if (!room) return;
-      let sender = (room.p1 && room.p1.id === socket.id) ? room.p1 : (room.p2 && room.p2.id === socket.id ? room.p2 : null);
-      if (sender) {
-          io.to(roomId).emit('chat_message', { text: message.substring(0, 32), senderName: sender.nickname, colorId: sender.colorId, context: 'GAME' });
+          io.to(roomId).emit('chat_message', { text: message.substring(0, 32), senderName: sender.nickname, colorId: sender.colorId });
       }
   });
 
   // --- GAME LOGIC ---
 
   socket.on('init_game_setup', ({ roomId, kingDeck, mainDeck, initialStats }) => {
-      console.log(`[GAME] Init Game Setup Request for ${roomId} from ${socket.id}`);
       const room = rooms[roomId];
-      
-      if (!room) {
-          console.error(`[GAME] Room ${roomId} not found for init.`);
-          return;
-      }
-      
-      if (room.p1.id !== socket.id) {
-          console.error(`[GAME] Unauthorized init request. Socket ${socket.id} is not Host ${room.p1.id}.`);
-          return; 
-      }
+      if (!room || room.p1.id !== socket.id) return;
 
-      console.log(`[GAME] Starting King Selection for ${roomId}`);
       room.gameState = 'KING_SELECTION';
       room.mainDeck = shuffle([...mainDeck]);
       room.kingDeck = shuffle([...kingDeck]);
@@ -193,13 +164,14 @@ io.on('connection', (socket) => {
       room.p1KingCards = [];
       room.p2KingCards = [];
       
-      // Phase 1: P1 Choosing
       const options = room.kingDeck.slice(0, 3);
-      room.kingSelection = { phase: 'P1_CHOOSING', availableOptions: options };
+      // FIXED: Start with 1 shuffle available
+      room.kingSelection = { phase: 'P1_CHOOSING', availableOptions: options, shufflesLeft: 1 };
 
       io.to(roomId).emit('king_selection_update', {
           phase: 'P1_CHOOSING',
           options: options,
+          shufflesLeft: 1,
           p1Kings: [],
           p2Kings: []
       });
@@ -209,21 +181,18 @@ io.on('connection', (socket) => {
       const room = rooms[roomId];
       if (!room) return;
       
-      // Determine whose turn it is to shuffle
-      let isP1 = room.p1.id === socket.id;
-      
-      if ((isP1 && room.kingSelection.phase === 'P1_CHOOSING') || (!isP1 && room.kingSelection.phase === 'P2_CHOOSING')) {
-          // Reshuffle the current options back into the deck (excluding already picked)
-          // Actually, just shuffle the whole unused deck and pick 3 new ones
+      if (room.kingSelection.shufflesLeft > 0) {
           room.kingDeck = shuffle(room.kingDeck);
           const newOptions = room.kingDeck.slice(0, 3);
           room.kingSelection.availableOptions = newOptions;
+          room.kingSelection.shufflesLeft--;
           
           io.to(roomId).emit('king_selection_update', {
               phase: room.kingSelection.phase,
               options: newOptions,
               p1Kings: room.p1KingCards,
               p2Kings: room.p2KingCards,
+              shufflesLeft: room.kingSelection.shufflesLeft,
               shuffled: true
           });
       }
@@ -234,29 +203,25 @@ io.on('connection', (socket) => {
       if (!room) return;
 
       const isP1 = room.p1 && room.p1.id === socket.id;
-      console.log(`[GAME] Card Selected in ${roomId}: ${card.name} by ${isP1 ? 'P1' : 'P2'}`);
       
       if (isP1 && room.kingSelection.phase === 'P1_CHOOSING') {
           room.p1KingCards.push(card);
-          // Apply King Stats Modifiers
+          // Apply Modifiers
           if(card.id === 'k_big') room.p1Stats.king = 60;
           if(card.id === 'k_son') { room.p1Stats.wall = 40; room.p1Stats.tower = 40; room.p1Stats.king = 20; }
           if(card.id === 'k_bunk') { room.p1Stats.wall = 60; room.p1Stats.tower = 10; room.p1Stats.king = 1; }
           if(card.id === 'k_hoard') { room.p1Stats.bricks += 30; room.p1Stats.weapons += 30; room.p1Stats.crystals += 30; }
           if(card.id === 'k_ind') { room.p1Stats.prodBricks++; room.p1Stats.prodWeapons++; room.p1Stats.prodCrystals++; room.p1Stats.bricks=10; room.p1Stats.weapons=10; room.p1Stats.crystals=10; }
 
-          room.kingDeck = room.kingDeck.filter(c => !room.kingSelection.availableOptions.find(o => o.id === c.id));
-          // Don't shuffle yet, wait for P2 phase to init logic
-          // room.kingDeck = shuffle(room.kingDeck); 
-          
-          // Re-shuffle for P2 to ensure freshness
-          room.kingDeck = shuffle(room.kingDeck);
+          room.kingDeck = shuffle(room.kingDeck.filter(c => c.id !== card.id));
           const options = room.kingDeck.slice(0, 3);
-          room.kingSelection = { phase: 'P2_CHOOSING', availableOptions: options };
+          // FIXED: Reset shuffle count for P2
+          room.kingSelection = { phase: 'P2_CHOOSING', availableOptions: options, shufflesLeft: 1 };
 
           io.to(roomId).emit('king_selection_update', {
               phase: 'P2_CHOOSING',
               options: options,
+              shufflesLeft: 1,
               lastSelected: { card, player: 'p1' },
               p1Kings: room.p1KingCards,
               p2Kings: room.p2KingCards
@@ -264,7 +229,6 @@ io.on('connection', (socket) => {
 
       } else if (!isP1 && room.kingSelection.phase === 'P2_CHOOSING') {
           room.p2KingCards.push(card);
-          // Apply King Stats Modifiers P2
           if(card.id === 'k_big') room.p2Stats.king = 60;
           if(card.id === 'k_son') { room.p2Stats.wall = 40; room.p2Stats.tower = 40; room.p2Stats.king = 20; }
           if(card.id === 'k_bunk') { room.p2Stats.wall = 60; room.p2Stats.tower = 10; room.p2Stats.king = 1; }
@@ -281,6 +245,7 @@ io.on('connection', (socket) => {
               if(room.mainDeck.length > 0) room.p2Hand.push(room.mainDeck.shift());
           }
 
+          // Add King Powers to deck
           const kingPowerCard = { id: 42, name: "KING POWER", type: 2, costB: 0, costW: 0, costC: 0, desc: "UNLOCK A PASSIVE BONUS", img: "👑", count: 1 };
           for(let k=0; k<4; k++) room.mainDeck.push({ ...kingPowerCard, uniqueId: Math.random().toString(36).substr(2, 9) });
           room.mainDeck = shuffle(room.mainDeck);
@@ -293,7 +258,6 @@ io.on('connection', (socket) => {
           });
 
           setTimeout(() => {
-              console.log(`[GAME] Starting Dealing Sequence for ${roomId}`);
               io.to(roomId).emit('start_dealing_sequence', {
                   p1Stats: room.p1Stats,
                   p2Stats: room.p2Stats,
@@ -361,7 +325,7 @@ io.on('connection', (socket) => {
               deckCount: room.mainDeck.length,
               event: { type: action, cardId: payload.card.id, player: playerRole, cardDesc: payload.card.desc, cardType: payload.card.type },
               logs: payload.logs,
-              p1KingCards: room.p1KingCards, // Ensure Kings are synced
+              p1KingCards: room.p1KingCards,
               p2KingCards: room.p2KingCards
           });
       }
@@ -384,16 +348,33 @@ io.on('connection', (socket) => {
       }
   });
 
+  socket.on('request_rematch', ({ roomId }) => {
+      const room = rooms[roomId];
+      if (!room) return;
+      
+      const isP1 = room.p1.id === socket.id;
+      if (isP1) room.p1.rematch = true;
+      else room.p2.rematch = true;
+      
+      io.to(roomId).emit('rematch_update', { p1: !!room.p1.rematch, p2: !!room.p2.rematch });
+      
+      if (room.p1.rematch && room.p2.rematch) {
+          room.p1.rematch = false;
+          room.p2.rematch = false;
+          // Restart to King Selection
+          // Reuse deck shuffling from init logic
+          io.to(roomId).emit('game_restart');
+      }
+  });
+
   socket.on('disconnect', () => {
     console.log(`[SOCKET] Disconnected: ${socket.id}`);
     for (const roomId in rooms) {
         const room = rooms[roomId];
         if (room.p1 && room.p1.id === socket.id) {
-            console.log(`[LOBBY] Host disconnected from ${roomId}`);
             io.to(roomId).emit('host_left');
             delete rooms[roomId];
         } else if (room.p2 && room.p2.id === socket.id) {
-            console.log(`[LOBBY] P2 disconnected from ${roomId}`);
             io.to(roomId).emit('opponent_disconnected');
             room.p2 = null; 
         }
