@@ -293,6 +293,17 @@ io.on('connection', (socket) => {
       }
   });
 
+  socket.on('activate_king_power', ({ roomId, p1Card, p2Card }) => {
+      const room = rooms[roomId];
+      if (!room) return;
+      
+      // Update local room state if needed, though mostly visual
+      if(p1Card) room.p1KingCards.push(p1Card);
+      if(p2Card) room.p2KingCards.push(p2Card);
+      
+      io.to(roomId).emit('king_power_triggered', { p1Card, p2Card });
+  });
+
   socket.on('game_action', ({ roomId, action, payload }) => {
       const room = rooms[roomId];
       if (!room) return;
