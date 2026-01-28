@@ -213,25 +213,33 @@ io.on('connection', (socket) => {
       if (room.shuffles[role] > 0) {
           if ((isP1 && room.kingSelection.phase === 'P1_CHOOSING') || (!isP1 && room.kingSelection.phase === 'P2_CHOOSING')) {
               
-              // Decrement shuffle count
-              room.shuffles[role]--;
-              
-              // Shuffle remaining deck (excluding current options technically, but simple shuffle is fine for fun)
-              room.kingDeck = shuffle(room.kingDeck);
-              
-              // Draw new options
-              const newOptions = room.kingDeck.slice(0, 3);
-              room.kingSelection.availableOptions = newOptions;
-              
-              // Broadcast update
+              // 1. Broadcast Shuffling State (Starts Animation)
               io.to(roomId).emit('king_selection_update', {
                   phase: room.kingSelection.phase,
-                  options: newOptions,
+                  options: room.kingSelection.availableOptions,
                   shufflesLeft: room.shuffles[role],
                   p1Kings: room.p1KingCards,
                   p2Kings: room.p2KingCards,
-                  isShuffling: true // Trigger animation on client
+                  isShuffling: true // START ANIMATION
               });
+
+              // 2. Perform Shuffle after delay to allow animation to play
+              setTimeout(() => {
+                  room.shuffles[role]--;
+                  room.kingDeck = shuffle(room.kingDeck);
+                  const newOptions = room.kingDeck.slice(0, 3);
+                  room.kingSelection.availableOptions = newOptions;
+                  
+                  // 3. Broadcast Result (Ends Animation)
+                  io.to(roomId).emit('king_selection_update', {
+                      phase: room.kingSelection.phase,
+                      options: newOptions,
+                      shufflesLeft: room.shuffles[role],
+                      p1Kings: room.p1KingCards,
+                      p2Kings: room.p2KingCards,
+                      isShuffling: false // STOP ANIMATION
+                  });
+              }, 1500); // 1.5s delay for the shuffle visual
           }
       }
   });
