@@ -83,7 +83,9 @@ io.on('connection', (socket) => {
       turn: 'p1',
       turnCounts: { p1: 1, p2: 0 }, // Independent turn counts
       shuffles: { p1: 1, p2: 1 },
-      kingSelection: { phase: 'IDLE', availableOptions: [] }
+      kingSelection: { phase: 'IDLE', availableOptions: [] },
+      rematchP1: false,
+      rematchP2: false
     };
     
     socket.emit('room_created', roomId);
@@ -177,10 +179,13 @@ io.on('connection', (socket) => {
       room.gameStats = { p1: {...initialGameStats}, p2: {...initialGameStats} };
       room.turnCounts = { p1: 1, p2: 0 };
       room.shuffles = { p1: 1, p2: 1 };
+      room.rematchP1 = false;
+      room.rematchP2 = false;
       
       const options = room.kingDeck.slice(0, 3);
       room.kingSelection = { phase: 'P1_CHOOSING', availableOptions: options };
 
+      io.to(roomId).emit('game_restart'); // Reset clients to selection screen
       io.to(roomId).emit('king_selection_update', {
           phase: 'P1_CHOOSING',
           options: options,
@@ -188,6 +193,19 @@ io.on('connection', (socket) => {
           p1Kings: [],
           p2Kings: []
       });
+  });
+
+  socket.on('request_rematch', ({ roomId }) => {
+      const room = rooms[roomId];
+      if (!room) return;
+      
+      if (room.p1 && room.p1.id === socket.id) {
+          room.rematchP1 = true;
+      } else if (room.p2 && room.p2.id === socket.id) {
+          room.rematchP2 = true;
+      }
+      
+      io.to(roomId).emit('rematch_update', { p1: room.rematchP1 || false, p2: room.rematchP2 || false });
   });
 
   socket.on('shuffle_king_deck', ({ roomId }) => {
