@@ -33,20 +33,12 @@ const shuffle = (array) => {
     return array;
 };
 
-// CHECK WIN CONDITIONS
-const checkWinCondition = (p1Stats, p2Stats, p1Name, p2Name) => {
-    // 1. Check if P1 Won
-    if (p1Stats.king >= 100) return { winner: 'p1', reason: `${p1Name} KING REACHED MAXIMUM POWER!` };
-    if (p1Stats.tower >= 150) return { winner: 'p1', reason: `${p1Name} TOWER REACHED MAXIMUM HEIGHT!` };
-    if (p1Stats.wall >= 200) return { winner: 'p1', reason: `${p1Name} WALL PIERCES THE HEAVENS!` };
-    if (p2Stats.king <= 0) return { winner: 'p1', reason: `THE ${p2Name} KING HAS BEEN DESTROYED!` };
-
-    // 2. Check if P2 Won
-    if (p2Stats.king >= 100) return { winner: 'p2', reason: `${p2Name} KING REACHED MAXIMUM POWER!` };
-    if (p2Stats.tower >= 150) return { winner: 'p2', reason: `${p2Name} TOWER REACHED MAXIMUM HEIGHT!` };
-    if (p2Stats.wall >= 200) return { winner: 'p2', reason: `${p2Name} WALL PIERCES THE HEAVENS!` };
-    if (p1Stats.king <= 0) return { winner: 'p2', reason: `${p1Name} KING HAS FALLEN!` };
-
+// Check win conditions
+const checkWinCondition = (myStats, opStats, myName, opName) => {
+    if (myStats.wall >= 200) return { winner: true, reason: `${myName} WALL PIERCES THE HEAVENS!` };
+    if (myStats.tower >= 150) return { winner: true, reason: `${myName} TOWER REACHED MAXIMUM HEIGHT!` };
+    if (myStats.king >= 100) return { winner: true, reason: `${myName} KING HAS REACHED MAXIMUM POWER!` };
+    if (opStats.king <= 0) return { winner: true, reason: `${opName} KING HAS BEEN DESTROYED!` };
     return null;
 };
 
@@ -225,6 +217,19 @@ io.on('connection', (socket) => {
       io.to(roomId).emit('rematch_update', { p1: room.rematchP1 || false, p2: room.rematchP2 || false });
   });
 
+  socket.on('leave_room', ({ roomId }) => {
+      const room = rooms[roomId];
+      if (!room) return;
+      
+      if (room.p1 && room.p1.id === socket.id) {
+          io.to(roomId).emit('host_left');
+          delete rooms[roomId];
+      } else if (room.p2 && room.p2.id === socket.id) {
+          io.to(roomId).emit('opponent_disconnected', { nickname: room.p2.nickname });
+          room.p2 = null; 
+      }
+  });
+
   socket.on('shuffle_king_deck', ({ roomId }) => {
       const room = rooms[roomId];
       if (!room) return;
@@ -339,7 +344,7 @@ io.on('connection', (socket) => {
 
   socket.on('draw_card_req', ({ roomId }) => {
       const room = rooms[roomId];
-      if(!room || room.gameState !== 'PLAYING') return;
+      if(!room) return;
       
       const isP1 = room.p1.id === socket.id;
       let newCard = null;
@@ -395,7 +400,7 @@ io.on('connection', (socket) => {
 
   socket.on('game_action', ({ roomId, action, payload }) => {
       const room = rooms[roomId];
-      if (!room || room.gameState !== 'PLAYING') return;
+      if (!room) return;
 
       const isP1 = room.p1 && room.p1.id === socket.id;
       const playerRole = isP1 ? 'p1' : 'p2';
@@ -493,30 +498,28 @@ io.on('connection', (socket) => {
           });
       }
 
-      // --- CHECK VICTORY AFTER ACTION ---
-      const winResult = checkWinCondition(room.p1Stats, room.p2Stats, room.p1.nickname, room.p2.nickname);
-      if (winResult) {
-          room.gameState = 'FINISHED';
-          io.to(roomId).emit('game_over', {
-              winner: winResult.winner,
-              reason: winResult.reason,
-              finalStats: room.gameStats
-          });
+      // --- WIN CONDITION CHECK ---
+      const p1Win = checkWinCondition(room.p1Stats, room.p2Stats, room.p1.nickname, room.p2.nickname);
+      const p2Win = checkWinCondition(room.p2Stats, room.p1Stats, room.p2.nickname, room.p1.nickname);
+
+      if (p1Win) {
+          room.gameState = 'WON';
+          io.to(roomId).emit('game_over', { winner: 'p1', reason: p1Win.reason });
+      } else if (p2Win) {
+          room.gameState = 'WON';
+          io.to(roomId).emit('game_over', { winner: 'p2', reason: p2Win.reason });
       }
   });
 
   socket.on('disconnect', () => {
     for (const roomId in rooms) {
         const room = rooms[roomId];
-        let leaverName = "";
-        
         if (room.p1 && room.p1.id === socket.id) {
-            leaverName = room.p1.nickname;
             io.to(roomId).emit('host_left');
             delete rooms[roomId];
         } else if (room.p2 && room.p2.id === socket.id) {
-            leaverName = room.p2.nickname;
-            io.to(roomId).emit('opponent_disconnected', { nickname: leaverName });
+            // Send the specific nickname of the disconnected player
+            io.to(roomId).emit('opponent_disconnected', { nickname: room.p2.nickname });
             room.p2 = null; 
         }
     }
