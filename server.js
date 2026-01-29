@@ -33,6 +33,23 @@ const shuffle = (array) => {
     return array;
 };
 
+// CHECK WIN CONDITIONS
+const checkWinCondition = (p1Stats, p2Stats, p1Name, p2Name) => {
+    // 1. Check if P1 Won
+    if (p1Stats.king >= 100) return { winner: 'p1', reason: `${p1Name} KING REACHED MAXIMUM POWER!` };
+    if (p1Stats.tower >= 150) return { winner: 'p1', reason: `${p1Name} TOWER REACHED MAXIMUM HEIGHT!` };
+    if (p1Stats.wall >= 200) return { winner: 'p1', reason: `${p1Name} WALL PIERCES THE HEAVENS!` };
+    if (p2Stats.king <= 0) return { winner: 'p1', reason: `THE ${p2Name} KING HAS BEEN DESTROYED!` };
+
+    // 2. Check if P2 Won
+    if (p2Stats.king >= 100) return { winner: 'p2', reason: `${p2Name} KING REACHED MAXIMUM POWER!` };
+    if (p2Stats.tower >= 150) return { winner: 'p2', reason: `${p2Name} TOWER REACHED MAXIMUM HEIGHT!` };
+    if (p2Stats.wall >= 200) return { winner: 'p2', reason: `${p2Name} WALL PIERCES THE HEAVENS!` };
+    if (p1Stats.king <= 0) return { winner: 'p2', reason: `${p1Name} KING HAS FALLEN!` };
+
+    return null;
+};
+
 io.on('connection', (socket) => {
   console.log(`[SOCKET] User connected: ${socket.id}`);
 
@@ -322,7 +339,7 @@ io.on('connection', (socket) => {
 
   socket.on('draw_card_req', ({ roomId }) => {
       const room = rooms[roomId];
-      if(!room) return;
+      if(!room || room.gameState !== 'PLAYING') return;
       
       const isP1 = room.p1.id === socket.id;
       let newCard = null;
@@ -378,7 +395,7 @@ io.on('connection', (socket) => {
 
   socket.on('game_action', ({ roomId, action, payload }) => {
       const room = rooms[roomId];
-      if (!room) return;
+      if (!room || room.gameState !== 'PLAYING') return;
 
       const isP1 = room.p1 && room.p1.id === socket.id;
       const playerRole = isP1 ? 'p1' : 'p2';
@@ -475,16 +492,31 @@ io.on('connection', (socket) => {
               gameStats: room.gameStats
           });
       }
+
+      // --- CHECK VICTORY AFTER ACTION ---
+      const winResult = checkWinCondition(room.p1Stats, room.p2Stats, room.p1.nickname, room.p2.nickname);
+      if (winResult) {
+          room.gameState = 'FINISHED';
+          io.to(roomId).emit('game_over', {
+              winner: winResult.winner,
+              reason: winResult.reason,
+              finalStats: room.gameStats
+          });
+      }
   });
 
   socket.on('disconnect', () => {
     for (const roomId in rooms) {
         const room = rooms[roomId];
+        let leaverName = "";
+        
         if (room.p1 && room.p1.id === socket.id) {
+            leaverName = room.p1.nickname;
             io.to(roomId).emit('host_left');
             delete rooms[roomId];
         } else if (room.p2 && room.p2.id === socket.id) {
-            io.to(roomId).emit('opponent_disconnected');
+            leaverName = room.p2.nickname;
+            io.to(roomId).emit('opponent_disconnected', { nickname: leaverName });
             room.p2 = null; 
         }
     }
