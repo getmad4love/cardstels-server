@@ -276,12 +276,15 @@ io.on('connection', (socket) => {
           room.p1KingCards.push(card);
           // Apply Modifiers
           if(card.id === 'k_big') room.p1Stats.king = 60;
-          if(card.id === 'k_son') { room.p1Stats.wall = 40; room.p1Stats.tower = 40; room.p1Stats.king = 20; }
+          if(card.id === 'k_son') { room.p1Stats.wall = 40; room.p1Stats.tower = 20; room.p1Stats.king = 10; }
           if(card.id === 'k_bunk') { room.p1Stats.wall = 60; room.p1Stats.tower = 10; room.p1Stats.king = 1; }
           if(card.id === 'k_hoard') { room.p1Stats.bricks += 30; room.p1Stats.weapons += 30; room.p1Stats.crystals += 30; }
           if(card.id === 'k_ind') { room.p1Stats.prodBricks++; room.p1Stats.prodWeapons++; room.p1Stats.prodCrystals++; room.p1Stats.bricks=10; room.p1Stats.weapons=10; room.p1Stats.crystals=10; }
 
           room.kingDeck = room.kingDeck.filter(c => !room.kingSelection.availableOptions.find(o => o.id === c.id));
+          // REMOVE SELECTED FROM DECK
+          room.kingDeck = room.kingDeck.filter(c => c.id !== card.id);
+          
           room.kingDeck = shuffle(room.kingDeck);
           const options = room.kingDeck.slice(0, 3);
           room.kingSelection = { phase: 'P2_CHOOSING', availableOptions: options };
@@ -299,10 +302,13 @@ io.on('connection', (socket) => {
           room.p2KingCards.push(card);
           // Apply Modifiers
           if(card.id === 'k_big') room.p2Stats.king = 60;
-          if(card.id === 'k_son') { room.p2Stats.wall = 40; room.p2Stats.tower = 40; room.p2Stats.king = 20; }
+          if(card.id === 'k_son') { room.p2Stats.wall = 40; room.p2Stats.tower = 20; room.p2Stats.king = 10; }
           if(card.id === 'k_bunk') { room.p2Stats.wall = 60; room.p2Stats.tower = 10; room.p2Stats.king = 1; }
           if(card.id === 'k_hoard') { room.p2Stats.bricks += 30; room.p2Stats.weapons += 30; room.p2Stats.crystals += 30; }
           if(card.id === 'k_ind') { room.p2Stats.prodBricks++; room.p2Stats.prodWeapons++; room.p2Stats.prodCrystals++; room.p2Stats.bricks=10; room.p2Stats.weapons=10; room.p2Stats.crystals=10; }
+
+          // REMOVE SELECTED FROM DECK
+          room.kingDeck = room.kingDeck.filter(c => c.id !== card.id);
 
           room.gameState = 'DEALING';
           room.turn = 'p1';
@@ -354,15 +360,13 @@ io.on('connection', (socket) => {
           // Madness Handling
           let isMadnessDraw = false;
           if (isP1) {
-              // Check Madness
-              if (room.p1Stats.madnessActive && newCard.type !== 4) { // Don't waste on specials
+              if (room.p1Stats.madnessActive && newCard.type !== 4) {
                   room.p1Stats.madnessActive = false;
                   newCard.isMadness = true;
                   isMadnessDraw = true;
               }
               room.p1Hand.push(newCard);
           } else {
-              // Check Madness
               if (room.p2Stats.madnessActive && newCard.type !== 4) {
                   room.p2Stats.madnessActive = false;
                   newCard.isMadness = true;
@@ -375,7 +379,6 @@ io.on('connection', (socket) => {
           socket.broadcast.to(roomId).emit('opponent_drew_card');
           io.to(roomId).emit('deck_count_update', room.mainDeck.length);
           
-          // If madness consumed, sync stats to remove indicator
           if (isMadnessDraw) {
               io.to(roomId).emit('state_sync', {
                   p1Stats: room.p1Stats,
@@ -392,10 +395,33 @@ io.on('connection', (socket) => {
       const room = rooms[roomId];
       if (!room) return;
       
-      if(p1Card) room.p1KingCards.push(p1Card);
-      if(p2Card) room.p2KingCards.push(p2Card);
+      // LOGIC: Draw 2 new cards from the King Deck that no one has
+      // Filter out ANY cards currently owned by P1 or P2 from the potential pool
+      const ownedIds = [...room.p1KingCards, ...room.p2KingCards].map(c => c.id);
       
-      io.to(roomId).emit('king_power_triggered', { p1Card, p2Card });
+      // Also filter out forbidden starters if it's mid-game
+      let forbiddenIds = [...ownedIds, 'k_big', 'k_son', 'k_hoard', 'k_ind', 'k_bunk'];
+      
+      // Filter the deck
+      let availablePool = room.kingDeck.filter(c => !forbiddenIds.includes(c.id));
+      
+      if (availablePool.length < 2) {
+          // If deck is exhausted, we can't draw. Just emit empty or handle gracefully
+          return; 
+      }
+      
+      availablePool = shuffle(availablePool);
+      
+      const newP1Card = availablePool[0];
+      const newP2Card = availablePool[1];
+      
+      // Remove them from deck so they aren't drawn again
+      room.kingDeck = room.kingDeck.filter(c => c.id !== newP1Card.id && c.id !== newP2Card.id);
+      
+      room.p1KingCards.push(newP1Card);
+      room.p2KingCards.push(newP2Card);
+      
+      io.to(roomId).emit('king_power_triggered', { p1Card: newP1Card, p2Card: newP2Card });
   });
 
   socket.on('game_action', ({ roomId, action, payload }) => {
@@ -405,17 +431,12 @@ io.on('connection', (socket) => {
       const isP1 = room.p1 && room.p1.id === socket.id;
       const playerRole = isP1 ? 'p1' : 'p2';
       const statsKey = playerRole;
-      const opponentKey = isP1 ? 'p2' : 'p1';
 
       if (action === 'PLAY_CARD' || action === 'DISCARD_CARD') {
-          // --- STATS TRACKING ---
           if (action === 'PLAY_CARD') {
               room.gameStats[statsKey].cardsUsed++;
-              // Calculate cost estimation based on difference (simple heuristic as server trusts client result payload for now)
-              const bDiff = room[statsKey + 'Stats'].bricks - payload.newP1Stats.bricks; // If P1
-              // ... simplistic approach:
+              const bDiff = room[statsKey + 'Stats'].bricks - payload.newP1Stats.bricks; 
               if (isP1) {
-                  // Actually, calculate damage dealt by comparing prev vs new op stats
                   const dKing = room.p2Stats.king - payload.newP2Stats.king;
                   const dTower = room.p2Stats.tower - payload.newP2Stats.tower;
                   const dWall = room.p2Stats.wall - payload.newP2Stats.wall;
@@ -424,11 +445,9 @@ io.on('connection', (socket) => {
                       room.gameStats.p1.dmg += totalDmg;
                       room.gameStats.p2.taken += totalDmg;
                   }
-                  // Cost
                   const cost = (room.p1Stats.bricks - payload.newP1Stats.bricks) + (room.p1Stats.weapons - payload.newP1Stats.weapons) + (room.p1Stats.crystals - payload.newP1Stats.crystals);
                   if (cost > 0) room.gameStats.p1.totalCost += cost;
               } else {
-                  // P2 Logic
                   const dKing = room.p1Stats.king - payload.newP1Stats.king;
                   const dTower = room.p1Stats.tower - payload.newP1Stats.tower;
                   const dWall = room.p1Stats.wall - payload.newP1Stats.wall;
@@ -437,7 +456,6 @@ io.on('connection', (socket) => {
                       room.gameStats.p2.dmg += totalDmg;
                       room.gameStats.p1.taken += totalDmg;
                   }
-                  // Cost
                   const cost = (room.p2Stats.bricks - payload.newP2Stats.bricks) + (room.p2Stats.weapons - payload.newP2Stats.weapons) + (room.p2Stats.crystals - payload.newP2Stats.crystals);
                   if (cost > 0) room.gameStats.p2.totalCost += cost;
               }
@@ -451,7 +469,10 @@ io.on('connection', (socket) => {
           if (isP1) room.p1Hand = room.p1Hand.filter(c => c.uniqueId !== payload.card.uniqueId);
           else room.p2Hand = room.p2Hand.filter(c => c.uniqueId !== payload.card.uniqueId);
           
-          room.mainDeck.push({ ...payload.card, uniqueId: Math.random().toString() });
+          // CRITICAL FIX: DO NOT RECYCLE KING POWER CARDS (ID 42)
+          if (String(payload.card.id) !== '42' && payload.card.id !== 42) {
+              room.mainDeck.push({ ...payload.card, uniqueId: Math.random().toString() });
+          }
 
           io.to(roomId).emit('state_sync', {
               p1Stats: room.p1Stats,
@@ -462,17 +483,15 @@ io.on('connection', (socket) => {
               logs: payload.logs,
               p1KingCards: room.p1KingCards, 
               p2KingCards: room.p2KingCards,
-              gameStats: room.gameStats // SEND UPDATED STATS
+              gameStats: room.gameStats 
           });
       }
 
       if (action === 'END_TURN') {
-          // Check for damage in end turn (Archer, Burn, etc)
           const p1Prev = room.p1Stats; const p2Prev = room.p2Stats;
           room.p1Stats = payload.newP1Stats;
           room.p2Stats = payload.newP2Stats;
           
-          // Approximate archer/burn damage tracking
           if (isP1) {
               const d = (p2Prev.king - room.p2Stats.king) + (p2Prev.tower - room.p2Stats.tower) + (p2Prev.wall - room.p2Stats.wall);
               if (d > 0) { room.gameStats.p1.dmg += d; room.gameStats.p2.taken += d; }
@@ -488,7 +507,7 @@ io.on('connection', (socket) => {
               p1Stats: room.p1Stats,
               p2Stats: room.p2Stats,
               turn: room.turn,
-              turnCounts: room.turnCounts, // Send current counts
+              turnCounts: room.turnCounts, 
               deckCount: room.mainDeck.length,
               event: { type: 'END_TURN', player: playerRole },
               logs: payload.logs,
@@ -498,7 +517,6 @@ io.on('connection', (socket) => {
           });
       }
 
-      // --- WIN CONDITION CHECK ---
       const p1Win = checkWinCondition(room.p1Stats, room.p2Stats, room.p1.nickname, room.p2.nickname);
       const p2Win = checkWinCondition(room.p2Stats, room.p1Stats, room.p2.nickname, room.p1.nickname);
 
@@ -518,7 +536,6 @@ io.on('connection', (socket) => {
             io.to(roomId).emit('host_left');
             delete rooms[roomId];
         } else if (room.p2 && room.p2.id === socket.id) {
-            // Send the specific nickname of the disconnected player
             io.to(roomId).emit('opponent_disconnected', { nickname: room.p2.nickname });
             room.p2 = null; 
         }
