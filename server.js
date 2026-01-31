@@ -364,17 +364,22 @@ io.on('connection', (socket) => {
       if (room.mainDeck.length > 0) {
           newCard = room.mainDeck.shift();
           
+          // Calculate if card has cost (to properly consume Madness)
+          // Prevents King Power (ID 42) or Special cards (Type 4) from consuming Madness buff.
+          const hasCost = (newCard.costB || 0) > 0 || (newCard.costW || 0) > 0 || (newCard.costC || 0) > 0;
+
           // Madness Handling
           let isMadnessDraw = false;
           if (isP1) {
-              if (room.p1Stats.madnessActive && newCard.type !== 4) { 
+              // Madness only consumed if card isn't special AND has a resource cost
+              if (room.p1Stats.madnessActive && newCard.type !== 4 && hasCost) { 
                   room.p1Stats.madnessActive = false;
                   newCard.isMadness = true;
                   isMadnessDraw = true;
               }
               room.p1Hand.push(newCard);
           } else {
-              if (room.p2Stats.madnessActive && newCard.type !== 4) {
+              if (room.p2Stats.madnessActive && newCard.type !== 4 && hasCost) {
                   room.p2Stats.madnessActive = false;
                   newCard.isMadness = true;
                   isMadnessDraw = true;
@@ -448,8 +453,21 @@ io.on('connection', (socket) => {
               room.gameStats[statsKey].cardsDiscarded++;
           }
 
+          // SERVER SAFEGUARD: Prevent client from overwriting madnessActive state due to race conditions
+          // If the server thinks madness is FALSE (consumed by draw), but client thinks TRUE (lag),
+          // playing a normal card would send TRUE back to server. We must prevent this overwrite.
+          const wasMadnessP1 = room.p1Stats.madnessActive;
+          const wasMadnessP2 = room.p2Stats.madnessActive;
+          const isMadnessCard = payload.card.name === 'MADNESS' || payload.card.id === 107;
+
           room.p1Stats = payload.newP1Stats;
           room.p2Stats = payload.newP2Stats;
+          
+          // Force server state back if card played wasn't Madness itself
+          if (!isMadnessCard) {
+              if (isP1) room.p1Stats.madnessActive = wasMadnessP1;
+              else room.p2Stats.madnessActive = wasMadnessP2;
+          }
           
           if (isP1) room.p1Hand = room.p1Hand.filter(c => c.uniqueId !== payload.card.uniqueId);
           else room.p2Hand = room.p2Hand.filter(c => c.uniqueId !== payload.card.uniqueId);
@@ -477,8 +495,17 @@ io.on('connection', (socket) => {
       if (action === 'END_TURN') {
           // Check for damage in end turn (Archer, Burn, etc)
           const p1Prev = room.p1Stats; const p2Prev = room.p2Stats;
+          
+          // SERVER SAFEGUARD FOR END TURN AS WELL
+          const wasMadnessP1 = room.p1Stats.madnessActive;
+          const wasMadnessP2 = room.p2Stats.madnessActive;
+
           room.p1Stats = payload.newP1Stats;
           room.p2Stats = payload.newP2Stats;
+          
+          // Madness cannot be activated during End Turn, so always preserve server state
+          room.p1Stats.madnessActive = wasMadnessP1;
+          room.p2Stats.madnessActive = wasMadnessP2;
           
           // Approximate archer/burn damage tracking
           if (isP1) {
