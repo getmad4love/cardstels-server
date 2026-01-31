@@ -366,20 +366,22 @@ io.on('connection', (socket) => {
           
           // Calculate if card has cost (to properly consume Madness)
           // Prevents King Power (ID 42) or Special cards (Type 4) from consuming Madness buff.
-          const hasCost = (newCard.costB || 0) > 0 || (newCard.costW || 0) > 0 || (newCard.costC || 0) > 0;
+          // Explicit casting to Number to ensure safety
+          const hasCost = (Number(newCard.costB) || 0) > 0 || (Number(newCard.costW) || 0) > 0 || (Number(newCard.costC) || 0) > 0;
+          const cardType = Number(newCard.type);
 
           // Madness Handling
           let isMadnessDraw = false;
           if (isP1) {
               // Madness only consumed if card isn't special AND has a resource cost
-              if (room.p1Stats.madnessActive && newCard.type !== 4 && hasCost) { 
+              if (room.p1Stats.madnessActive && cardType !== 4 && hasCost) { 
                   room.p1Stats.madnessActive = false;
                   newCard.isMadness = true;
                   isMadnessDraw = true;
               }
               room.p1Hand.push(newCard);
           } else {
-              if (room.p2Stats.madnessActive && newCard.type !== 4 && hasCost) {
+              if (room.p2Stats.madnessActive && cardType !== 4 && hasCost) {
                   room.p2Stats.madnessActive = false;
                   newCard.isMadness = true;
                   isMadnessDraw = true;
