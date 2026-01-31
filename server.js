@@ -17,7 +17,7 @@ const io = new Server(server, {
 const rooms = {};
 
 const initialGameStats = { 
-    built: 0, dmg: 0, taken: 0, cardsUsed: 0, cardsDiscarded: 0, totalCost: 0 
+    built: 0, dmg: 0, taken: 0, cardsUsed: 0, cardsDiscarded: 0, totalCost: 0, startTime: Date.now()
 };
 
 // Helper to shuffle array (Fisher-Yates)
@@ -106,7 +106,7 @@ io.on('connection', (socket) => {
       p2KingCards: [],
       p1Stats: null,
       p2Stats: null,
-      gameStats: { p1: {...initialGameStats}, p2: {...initialGameStats} },
+      gameStats: { p1: {...initialGameStats, startTime: Date.now()}, p2: {...initialGameStats, startTime: Date.now()} },
       turn: 'p1',
       turnCounts: { p1: 1, p2: 0 },
       shuffles: { p1: 1, p2: 1 },
@@ -202,7 +202,7 @@ io.on('connection', (socket) => {
       room.p2Stats = { ...initialStats };
       room.p1KingCards = [];
       room.p2KingCards = [];
-      room.gameStats = { p1: {...initialGameStats}, p2: {...initialGameStats} };
+      room.gameStats = { p1: {...initialGameStats, startTime: Date.now()}, p2: {...initialGameStats, startTime: Date.now()} };
       room.turnCounts = { p1: 1, p2: 0 };
       room.shuffles = { p1: 1, p2: 1 };
       room.rematchP1 = false;
@@ -248,7 +248,7 @@ io.on('connection', (socket) => {
           room.p2Hand = [];
           room.p1KingCards = [];
           room.p2KingCards = [];
-          room.gameStats = { p1: {...initialGameStats}, p2: {...initialGameStats} };
+          room.gameStats = { p1: {...initialGameStats, startTime: Date.now()}, p2: {...initialGameStats, startTime: Date.now()} };
           
           // Send updates
           io.to(roomId).emit('lobby_update', { p1: room.p1, p2: room.p2 });
