@@ -1,4 +1,3 @@
-
 import express from 'express';
 import http from 'http';
 import { Server } from 'socket.io';
@@ -235,7 +234,25 @@ io.on('connection', (socket) => {
       io.to(roomId).emit('rematch_update', { p1: room.rematchP1 || false, p2: room.rematchP2 || false });
 
       if (room.rematchP1 && room.rematchP2) {
-          io.to(roomId).emit('start_rematch');
+          // RESET ROOM TO LOBBY STATE
+          room.gameState = 'LOBBY';
+          room.p1.isReady = false;
+          if (room.p2) room.p2.isReady = false;
+          room.rematchP1 = false;
+          room.rematchP2 = false;
+          
+          // Clear previous game state data
+          room.mainDeck = [];
+          room.kingDeck = [];
+          room.p1Hand = [];
+          room.p2Hand = [];
+          room.p1KingCards = [];
+          room.p2KingCards = [];
+          room.gameStats = { p1: {...initialGameStats}, p2: {...initialGameStats} };
+          
+          // Send updates
+          io.to(roomId).emit('lobby_update', { p1: room.p1, p2: room.p2 });
+          io.to(roomId).emit('return_to_lobby');
       }
   });
 
