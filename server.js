@@ -1,3 +1,4 @@
+
 import express from 'express';
 import http from 'http';
 import { Server } from 'socket.io';
@@ -444,7 +445,7 @@ io.on('connection', (socket) => {
   });
 
   // --- REPLACED: Server-side King Card selection logic ---
-  socket.on('activate_king_power', ({ roomId }) => {
+  socket.on('activate_king_power', ({ roomId, triggerPlayer }) => {
       const room = rooms[roomId];
       if (!room) return;
       
@@ -477,7 +478,8 @@ io.on('connection', (socket) => {
       room.p2KingCards.push(p2Card);
       
       // 7. Broadcast the result to clients so they can animate
-      io.to(roomId).emit('king_power_triggered', { p1Card, p2Card });
+      // Pass firstDrawer as the player who triggered the event
+      io.to(roomId).emit('king_power_triggered', { p1Card, p2Card, firstDrawer: triggerPlayer });
   });
 
   socket.on('game_action', ({ roomId, action, payload }) => {
