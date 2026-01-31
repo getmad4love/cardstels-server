@@ -17,7 +17,7 @@ const io = new Server(server, {
 const rooms = {};
 
 const initialGameStats = { 
-    built: 0, dmg: 0, taken: 0, cardsUsed: 0, cardsDiscarded: 0, totalCost: 0, startTime: Date.now()
+    built: 0, dmg: 0, taken: 0, cardsUsed: 0, cardsDiscarded: 0, totalCost: 0
 };
 
 // Helper to shuffle array (Fisher-Yates)
@@ -106,7 +106,11 @@ io.on('connection', (socket) => {
       p2KingCards: [],
       p1Stats: null,
       p2Stats: null,
-      gameStats: { p1: {...initialGameStats, startTime: Date.now()}, p2: {...initialGameStats, startTime: Date.now()} },
+      gameStats: { 
+          p1: {...initialGameStats}, 
+          p2: {...initialGameStats},
+          startTime: Date.now() 
+      },
       turn: 'p1',
       turnCounts: { p1: 1, p2: 0 },
       shuffles: { p1: 1, p2: 1 },
@@ -202,7 +206,11 @@ io.on('connection', (socket) => {
       room.p2Stats = { ...initialStats };
       room.p1KingCards = [];
       room.p2KingCards = [];
-      room.gameStats = { p1: {...initialGameStats, startTime: Date.now()}, p2: {...initialGameStats, startTime: Date.now()} };
+      room.gameStats = { 
+          p1: {...initialGameStats}, 
+          p2: {...initialGameStats},
+          startTime: Date.now()
+      };
       room.turnCounts = { p1: 1, p2: 0 };
       room.shuffles = { p1: 1, p2: 1 };
       room.rematchP1 = false;
@@ -248,7 +256,11 @@ io.on('connection', (socket) => {
           room.p2Hand = [];
           room.p1KingCards = [];
           room.p2KingCards = [];
-          room.gameStats = { p1: {...initialGameStats, startTime: Date.now()}, p2: {...initialGameStats, startTime: Date.now()} };
+          room.gameStats = { 
+              p1: {...initialGameStats}, 
+              p2: {...initialGameStats},
+              startTime: Date.now()
+          };
           
           // Send updates
           io.to(roomId).emit('lobby_update', { p1: room.p1, p2: room.p2 });
@@ -431,13 +443,40 @@ io.on('connection', (socket) => {
       }
   });
 
-  socket.on('activate_king_power', ({ roomId, p1Card, p2Card }) => {
+  // --- REPLACED: Server-side King Card selection logic ---
+  socket.on('activate_king_power', ({ roomId }) => {
       const room = rooms[roomId];
       if (!room) return;
       
-      if(p1Card) room.p1KingCards.push(p1Card);
-      if(p2Card) room.p2KingCards.push(p2Card);
+      // 1. Get IDs of all currently owned King Cards to prevent duplicates
+      const ownedIds = new Set([
+          ...room.p1KingCards.map(c => c.id),
+          ...room.p2KingCards.map(c => c.id)
+      ]);
+
+      // 2. Filter the Deck: Remove any cards that are already owned
+      // This safeguards against cases where the deck wasn't perfectly cleaned up before
+      room.kingDeck = room.kingDeck.filter(c => !ownedIds.has(c.id));
+
+      // 3. Shuffle the deck
+      room.kingDeck = shuffle(room.kingDeck);
+
+      // 4. Ensure we have enough cards
+      if (room.kingDeck.length < 2) {
+          // Edge case: Not enough cards. In a real game, maybe recycle or do nothing.
+          // For now, we simply return, effectively fizzling the effect if deck is empty.
+          return;
+      }
+
+      // 5. Draw 2 cards
+      const p1Card = room.kingDeck.shift();
+      const p2Card = room.kingDeck.shift();
+
+      // 6. Assign to players
+      room.p1KingCards.push(p1Card);
+      room.p2KingCards.push(p2Card);
       
+      // 7. Broadcast the result to clients so they can animate
       io.to(roomId).emit('king_power_triggered', { p1Card, p2Card });
   });
 
