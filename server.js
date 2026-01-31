@@ -141,8 +141,10 @@ io.on('connection', (socket) => {
       if (target) {
           if (nickname !== undefined) target.nickname = nickname.substring(0, 12).toUpperCase();
           if (colorId !== undefined) target.colorId = colorId;
-          if (room.p1) room.p1.isReady = false;
-          if (room.p2) room.p2.isReady = false;
+          
+          // Only reset ready state for the player who made changes
+          target.isReady = false;
+          
           io.to(roomId).emit('lobby_update', { p1: room.p1, p2: room.p2 });
       }
   });
