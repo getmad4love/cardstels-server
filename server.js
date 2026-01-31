@@ -35,29 +35,11 @@ const shuffle = (array) => {
 
 // Check win conditions
 const checkWinCondition = (myStats, opStats, myName, opName) => {
-    if (!myStats || !opStats) return null;
     if (myStats.wall >= 200) return { winner: true, reason: `${myName} WALL PIERCES THE HEAVENS!` };
     if (myStats.tower >= 150) return { winner: true, reason: `${myName} TOWER REACHED MAXIMUM HEIGHT!` };
     if (myStats.king >= 100) return { winner: true, reason: `${myName} KING HAS REACHED MAXIMUM POWER!` };
     if (opStats.king <= 0) return { winner: true, reason: `${opName} KING HAS BEEN DESTROYED!` };
     return null;
-};
-
-// Safe stats calculator
-const calculateBuildStats = (oldStats, newStats) => {
-    if (!oldStats || !newStats) return 0;
-    let built = 0;
-    const oldWall = oldStats.wall || 0;
-    const newWall = newStats.wall || 0;
-    const oldTower = oldStats.tower || 0;
-    const newTower = newStats.tower || 0;
-    const oldKing = oldStats.king || 0;
-    const newKing = newStats.king || 0;
-
-    if (newWall > oldWall) built += (newWall - oldWall);
-    if (newTower > oldTower) built += (newTower - oldTower);
-    if (newKing > oldKing) built += (newKing - oldKing);
-    return built;
 };
 
 io.on('connection', (socket) => {
@@ -85,7 +67,7 @@ io.on('connection', (socket) => {
              deckCount: room.mainDeck.length,
              p1KingCards: room.p1KingCards,
              p2KingCards: room.p2KingCards,
-             gameStats: room.gameStats
+             gameStats: room.gameStats // Sync stats
          });
       }
       return;
@@ -99,7 +81,7 @@ io.on('connection', (socket) => {
       p2: null,
       gameState: 'LOBBY', 
       mainDeck: [],
-      discardPile: [],
+      discardPile: [], // New discard pile
       kingDeck: [],
       p1Hand: [],
       p2Hand: [],
@@ -109,7 +91,7 @@ io.on('connection', (socket) => {
       p2Stats: null,
       gameStats: { p1: {...initialGameStats}, p2: {...initialGameStats} },
       turn: 'p1',
-      turnCounts: { p1: 1, p2: 0 },
+      turnCounts: { p1: 1, p2: 0 }, // Independent turn counts
       shuffles: { p1: 1, p2: 1 },
       kingSelection: { phase: 'IDLE', availableOptions: [] },
       rematchP1: false,
@@ -125,6 +107,7 @@ io.on('connection', (socket) => {
     if (!room) { socket.emit('error', 'Room not found'); return; }
     
     if (room.p2) {
+        // Reconnect Logic
         room.p2.id = socket.id;
         room.p2.nickname = nickname;
         room.p2.colorId = colorId;
@@ -158,7 +141,10 @@ io.on('connection', (socket) => {
       if (target) {
           if (nickname !== undefined) target.nickname = nickname.substring(0, 12).toUpperCase();
           if (colorId !== undefined) target.colorId = colorId;
+          
+          // Only reset ready state for the player who made changes
           target.isReady = false;
+          
           io.to(roomId).emit('lobby_update', { p1: room.p1, p2: room.p2 });
       }
   });
@@ -197,7 +183,7 @@ io.on('connection', (socket) => {
 
       room.gameState = 'KING_SELECTION';
       room.mainDeck = shuffle([...mainDeck]);
-      room.discardPile = [];
+      room.discardPile = []; // Init discard
       room.kingDeck = shuffle([...kingDeck]);
       room.p1Stats = { ...initialStats };
       room.p2Stats = { ...initialStats };
@@ -212,7 +198,7 @@ io.on('connection', (socket) => {
       const options = room.kingDeck.slice(0, 3);
       room.kingSelection = { phase: 'P1_CHOOSING', availableOptions: options };
 
-      io.to(roomId).emit('game_restart');
+      io.to(roomId).emit('game_restart'); // Reset clients to selection screen
       io.to(roomId).emit('king_selection_update', {
           phase: 'P1_CHOOSING',
           options: options,
@@ -233,10 +219,6 @@ io.on('connection', (socket) => {
       }
       
       io.to(roomId).emit('rematch_update', { p1: room.rematchP1 || false, p2: room.rematchP2 || false });
-
-      if (room.rematchP1 && room.rematchP2) {
-          io.to(roomId).emit('start_rematch');
-      }
   });
 
   socket.on('leave_room', ({ roomId }) => {
@@ -296,6 +278,7 @@ io.on('connection', (socket) => {
       
       if (isP1 && room.kingSelection.phase === 'P1_CHOOSING') {
           room.p1KingCards.push(card);
+          // Apply Modifiers
           if(card.id === 'k_big') room.p1Stats.king = 60;
           if(card.id === 'k_son') { room.p1Stats.wall = 40; room.p1Stats.tower = 20; room.p1Stats.king = 10; }
           if(card.id === 'k_bunk') { room.p1Stats.wall = 60; room.p1Stats.tower = 10; room.p1Stats.king = 1; }
@@ -318,6 +301,7 @@ io.on('connection', (socket) => {
 
       } else if (!isP1 && room.kingSelection.phase === 'P2_CHOOSING') {
           room.p2KingCards.push(card);
+          // Apply Modifiers
           if(card.id === 'k_big') room.p2Stats.king = 60;
           if(card.id === 'k_son') { room.p2Stats.wall = 40; room.p2Stats.tower = 20; room.p2Stats.king = 10; }
           if(card.id === 'k_bunk') { room.p2Stats.wall = 60; room.p2Stats.tower = 10; room.p2Stats.king = 1; }
@@ -368,9 +352,11 @@ io.on('connection', (socket) => {
       
       const isP1 = room.p1.id === socket.id;
       
+      // DECK EMPTY LOGIC (Refills from discardPile)
       if (room.mainDeck.length === 0 && room.discardPile.length > 0) {
           room.mainDeck = shuffle(room.discardPile);
           room.discardPile = [];
+          // Force deck count update
           io.to(roomId).emit('deck_count_update', room.mainDeck.length);
       }
 
@@ -378,11 +364,16 @@ io.on('connection', (socket) => {
       if (room.mainDeck.length > 0) {
           newCard = room.mainDeck.shift();
           
+          // Calculate if card has cost (to properly consume Madness)
+          // Prevents King Power (ID 42) or Special cards (Type 4) from consuming Madness buff.
+          // Explicit casting to Number to ensure safety
           const hasCost = (Number(newCard.costB) || 0) > 0 || (Number(newCard.costW) || 0) > 0 || (Number(newCard.costC) || 0) > 0;
           const cardType = Number(newCard.type);
 
+          // Madness Handling
           let isMadnessDraw = false;
           if (isP1) {
+              // Madness only consumed if card isn't special AND has a resource cost
               if (room.p1Stats.madnessActive && cardType !== 4 && hasCost) { 
                   room.p1Stats.madnessActive = false;
                   newCard.isMadness = true;
@@ -425,157 +416,135 @@ io.on('connection', (socket) => {
   });
 
   socket.on('game_action', ({ roomId, action, payload }) => {
-      try {
-          const room = rooms[roomId];
-          if (!room) return;
+      const room = rooms[roomId];
+      if (!room) return;
 
-          const isP1 = room.p1 && room.p1.id === socket.id;
-          const playerRole = isP1 ? 'p1' : 'p2';
-          const statsKey = playerRole;
+      const isP1 = room.p1 && room.p1.id === socket.id;
+      const playerRole = isP1 ? 'p1' : 'p2';
+      const statsKey = playerRole;
 
-          if (action === 'PLAY_CARD' || action === 'DISCARD_CARD') {
-              if (action === 'PLAY_CARD') {
-                  room.gameStats[statsKey].cardsUsed++;
-                  
-                  // Ensure stats exist before accessing
-                  const prevP1 = room.p1Stats || initialGameStats;
-                  const prevP2 = room.p2Stats || initialGameStats;
-                  const newP1 = payload.newP1Stats || prevP1;
-                  const newP2 = payload.newP2Stats || prevP2;
-
-                  if (isP1) {
-                      const p1Built = calculateBuildStats(prevP1, newP1);
-                      if (p1Built > 0) room.gameStats.p1.built += p1Built;
-
-                      const dKing = (prevP2.king || 0) - (newP2.king || 0);
-                      const dTower = (prevP2.tower || 0) - (newP2.tower || 0);
-                      const dWall = (prevP2.wall || 0) - (newP2.wall || 0);
-                      const totalDmg = (dKing > 0 ? dKing : 0) + (dTower > 0 ? dTower : 0) + (dWall > 0 ? dWall : 0);
-                      if (totalDmg > 0) {
-                          room.gameStats.p1.dmg += totalDmg;
-                          room.gameStats.p2.taken += totalDmg;
-                      }
-                      
-                      const cost = (prevP1.bricks - newP1.bricks) + (prevP1.weapons - newP1.weapons) + (prevP1.crystals - newP1.crystals);
-                      if (cost > 0) room.gameStats.p1.totalCost += cost;
-                  } else {
-                      const p2Built = calculateBuildStats(prevP2, newP2);
-                      if (p2Built > 0) room.gameStats.p2.built += p2Built;
-
-                      const dKing = (prevP1.king || 0) - (newP1.king || 0);
-                      const dTower = (prevP1.tower || 0) - (newP1.tower || 0);
-                      const dWall = (prevP1.wall || 0) - (newP1.wall || 0);
-                      const totalDmg = (dKing > 0 ? dKing : 0) + (dTower > 0 ? dTower : 0) + (dWall > 0 ? dWall : 0);
-                      if (totalDmg > 0) {
-                          room.gameStats.p2.dmg += totalDmg;
-                          room.gameStats.p1.taken += totalDmg;
-                      }
-                      
-                      const cost = (prevP2.bricks - newP2.bricks) + (prevP2.weapons - newP2.weapons) + (prevP2.crystals - newP2.crystals);
-                      if (cost > 0) room.gameStats.p2.totalCost += cost;
-                  }
-              } else {
-                  room.gameStats[statsKey].cardsDiscarded++;
-              }
-
-              const wasMadnessP1 = room.p1Stats ? room.p1Stats.madnessActive : false;
-              const wasMadnessP2 = room.p2Stats ? room.p2Stats.madnessActive : false;
-              const isMadnessCard = payload.card.name === 'MADNESS' || payload.card.id === 107;
-
-              room.p1Stats = payload.newP1Stats;
-              room.p2Stats = payload.newP2Stats;
-              
-              if (!isMadnessCard) {
-                  if (room.p1Stats) {
-                      if (isP1) room.p1Stats.madnessActive = wasMadnessP1;
-                  }
-                  if (room.p2Stats) {
-                      if (!isP1) room.p2Stats.madnessActive = wasMadnessP2;
-                  }
-              }
-              
-              if (isP1) room.p1Hand = room.p1Hand.filter(c => c.uniqueId !== payload.card.uniqueId);
-              else room.p2Hand = room.p2Hand.filter(c => c.uniqueId !== payload.card.uniqueId);
-              
-              if (String(payload.card.id) !== '42' && payload.card.id !== 42) {
-                  room.discardPile.push({ ...payload.card, uniqueId: Math.random().toString() });
-              }
-
-              io.to(roomId).emit('state_sync', {
-                  p1Stats: room.p1Stats,
-                  p2Stats: room.p2Stats,
-                  turn: room.turn,
-                  deckCount: room.mainDeck.length,
-                  event: { type: action, cardId: payload.card.id, player: playerRole, cardDesc: payload.card.desc, cardType: payload.card.type },
-                  logs: payload.logs,
-                  p1KingCards: room.p1KingCards, 
-                  p2KingCards: room.p2KingCards,
-                  gameStats: room.gameStats 
-              });
-          }
-
-          if (action === 'END_TURN') {
-              const p1Prev = room.p1Stats || initialGameStats;
-              const p2Prev = room.p2Stats || initialGameStats;
-              const newP1 = payload.newP1Stats || p1Prev;
-              const newP2 = payload.newP2Stats || p2Prev;
-              
-              const wasMadnessP1 = p1Prev ? p1Prev.madnessActive : false;
-              const wasMadnessP2 = p2Prev ? p2Prev.madnessActive : false;
-
+      if (action === 'PLAY_CARD' || action === 'DISCARD_CARD') {
+          // --- STATS TRACKING ---
+          if (action === 'PLAY_CARD') {
+              room.gameStats[statsKey].cardsUsed++;
+              // Estimate damage done for stats
               if (isP1) {
-                  const p1Built = calculateBuildStats(p1Prev, newP1);
-                  if (p1Built > 0) room.gameStats.p1.built += p1Built;
+                  const dKing = room.p2Stats.king - payload.newP2Stats.king;
+                  const dTower = room.p2Stats.tower - payload.newP2Stats.tower;
+                  const dWall = room.p2Stats.wall - payload.newP2Stats.wall;
+                  const totalDmg = (dKing > 0 ? dKing : 0) + (dTower > 0 ? dTower : 0) + (dWall > 0 ? dWall : 0);
+                  if (totalDmg > 0) {
+                      room.gameStats.p1.dmg += totalDmg;
+                      room.gameStats.p2.taken += totalDmg;
+                  }
+                  const cost = (room.p1Stats.bricks - payload.newP1Stats.bricks) + (room.p1Stats.weapons - payload.newP1Stats.weapons) + (room.p1Stats.crystals - payload.newP1Stats.crystals);
+                  if (cost > 0) room.gameStats.p1.totalCost += cost;
               } else {
-                  const p2Built = calculateBuildStats(p2Prev, newP2);
-                  if (p2Built > 0) room.gameStats.p2.built += p2Built;
+                  const dKing = room.p1Stats.king - payload.newP1Stats.king;
+                  const dTower = room.p1Stats.tower - payload.newP1Stats.tower;
+                  const dWall = room.p1Stats.wall - payload.newP1Stats.wall;
+                  const totalDmg = (dKing > 0 ? dKing : 0) + (dTower > 0 ? dTower : 0) + (dWall > 0 ? dWall : 0);
+                  if (totalDmg > 0) {
+                      room.gameStats.p2.dmg += totalDmg;
+                      room.gameStats.p1.taken += totalDmg;
+                  }
+                  const cost = (room.p2Stats.bricks - payload.newP2Stats.bricks) + (room.p2Stats.weapons - payload.newP2Stats.weapons) + (room.p2Stats.crystals - payload.newP2Stats.crystals);
+                  if (cost > 0) room.gameStats.p2.totalCost += cost;
               }
-
-              room.p1Stats = newP1;
-              room.p2Stats = newP2;
-              
-              if(room.p1Stats) room.p1Stats.madnessActive = wasMadnessP1;
-              if(room.p2Stats) room.p2Stats.madnessActive = wasMadnessP2;
-              
-              if (isP1) {
-                  const d = ((p2Prev.king || 0) - (newP2.king || 0)) + ((p2Prev.tower || 0) - (newP2.tower || 0)) + ((p2Prev.wall || 0) - (newP2.wall || 0));
-                  if (d > 0) { room.gameStats.p1.dmg += d; room.gameStats.p2.taken += d; }
-              } else {
-                  const d = ((p1Prev.king || 0) - (newP1.king || 0)) + ((p1Prev.tower || 0) - (newP1.tower || 0)) + ((p1Prev.wall || 0) - (newP1.wall || 0));
-                  if (d > 0) { room.gameStats.p2.dmg += d; room.gameStats.p1.taken += d; }
-              }
-
-              room.turn = isP1 ? 'p2' : 'p1';
-              if (room.turn === 'p1') room.turnCounts.p1++; else room.turnCounts.p2++;
-              
-              io.to(roomId).emit('state_sync', {
-                  p1Stats: room.p1Stats,
-                  p2Stats: room.p2Stats,
-                  turn: room.turn,
-                  turnCounts: room.turnCounts, 
-                  deckCount: room.mainDeck.length,
-                  event: { type: 'END_TURN', player: playerRole },
-                  logs: payload.logs,
-                  p1KingCards: room.p1KingCards,
-                  p2KingCards: room.p2KingCards,
-                  gameStats: room.gameStats
-              });
+          } else {
+              room.gameStats[statsKey].cardsDiscarded++;
           }
 
-          // --- WIN CONDITION CHECK ---
-          const p1Win = checkWinCondition(room.p1Stats, room.p2Stats, room.p1.nickname, room.p2.nickname);
-          const p2Win = checkWinCondition(room.p2Stats, room.p1Stats, room.p2.nickname, room.p1.nickname);
+          // SERVER SAFEGUARD: Prevent client from overwriting madnessActive state due to race conditions
+          // If the server thinks madness is FALSE (consumed by draw), but client thinks TRUE (lag),
+          // playing a normal card would send TRUE back to server. We must prevent this overwrite.
+          const wasMadnessP1 = room.p1Stats.madnessActive;
+          const wasMadnessP2 = room.p2Stats.madnessActive;
+          const isMadnessCard = payload.card.name === 'MADNESS' || payload.card.id === 107;
 
-          if (p1Win) {
-              room.gameState = 'WON';
-              io.to(roomId).emit('game_over', { winner: 'p1', reason: p1Win.reason });
-          } else if (p2Win) {
-              room.gameState = 'WON';
-              io.to(roomId).emit('game_over', { winner: 'p2', reason: p2Win.reason });
+          room.p1Stats = payload.newP1Stats;
+          room.p2Stats = payload.newP2Stats;
+          
+          // Force server state back if card played wasn't Madness itself
+          if (!isMadnessCard) {
+              if (isP1) room.p1Stats.madnessActive = wasMadnessP1;
+              else room.p2Stats.madnessActive = wasMadnessP2;
           }
-      } catch (err) {
-          console.error(`[SERVER ERROR] Room: ${roomId}, Action: ${action}`, err);
-          // Optional: emit error to client so they know something broke
+          
+          if (isP1) room.p1Hand = room.p1Hand.filter(c => c.uniqueId !== payload.card.uniqueId);
+          else room.p2Hand = room.p2Hand.filter(c => c.uniqueId !== payload.card.uniqueId);
+          
+          // ** RECYCLING LOGIC (UPDATED) **
+          // Cards go to Discard Pile, EXCEPT King Power (ID 42) which is burned.
+          // Type 4 Specials should be recycled.
+          if (String(payload.card.id) !== '42' && payload.card.id !== 42) {
+              room.discardPile.push({ ...payload.card, uniqueId: Math.random().toString() });
+          }
+
+          io.to(roomId).emit('state_sync', {
+              p1Stats: room.p1Stats,
+              p2Stats: room.p2Stats,
+              turn: room.turn,
+              deckCount: room.mainDeck.length,
+              event: { type: action, cardId: payload.card.id, player: playerRole, cardDesc: payload.card.desc, cardType: payload.card.type },
+              logs: payload.logs,
+              p1KingCards: room.p1KingCards, 
+              p2KingCards: room.p2KingCards,
+              gameStats: room.gameStats 
+          });
+      }
+
+      if (action === 'END_TURN') {
+          // Check for damage in end turn (Archer, Burn, etc)
+          const p1Prev = room.p1Stats; const p2Prev = room.p2Stats;
+          
+          // SERVER SAFEGUARD FOR END TURN AS WELL
+          const wasMadnessP1 = room.p1Stats.madnessActive;
+          const wasMadnessP2 = room.p2Stats.madnessActive;
+
+          room.p1Stats = payload.newP1Stats;
+          room.p2Stats = payload.newP2Stats;
+          
+          // Madness cannot be activated during End Turn, so always preserve server state
+          room.p1Stats.madnessActive = wasMadnessP1;
+          room.p2Stats.madnessActive = wasMadnessP2;
+          
+          // Approximate archer/burn damage tracking
+          if (isP1) {
+              const d = (p2Prev.king - room.p2Stats.king) + (p2Prev.tower - room.p2Stats.tower) + (p2Prev.wall - room.p2Stats.wall);
+              if (d > 0) { room.gameStats.p1.dmg += d; room.gameStats.p2.taken += d; }
+          } else {
+              const d = (p1Prev.king - room.p1Stats.king) + (p1Prev.tower - room.p1Stats.tower) + (p1Prev.wall - room.p1Stats.wall);
+              if (d > 0) { room.gameStats.p2.dmg += d; room.gameStats.p1.taken += d; }
+          }
+
+          room.turn = isP1 ? 'p2' : 'p1';
+          if (room.turn === 'p1') room.turnCounts.p1++; else room.turnCounts.p2++;
+          
+          io.to(roomId).emit('state_sync', {
+              p1Stats: room.p1Stats,
+              p2Stats: room.p2Stats,
+              turn: room.turn,
+              turnCounts: room.turnCounts, 
+              deckCount: room.mainDeck.length,
+              event: { type: 'END_TURN', player: playerRole },
+              logs: payload.logs,
+              p1KingCards: room.p1KingCards,
+              p2KingCards: room.p2KingCards,
+              gameStats: room.gameStats
+          });
+      }
+
+      // --- WIN CONDITION CHECK ---
+      const p1Win = checkWinCondition(room.p1Stats, room.p2Stats, room.p1.nickname, room.p2.nickname);
+      const p2Win = checkWinCondition(room.p2Stats, room.p1Stats, room.p2.nickname, room.p1.nickname);
+
+      if (p1Win) {
+          room.gameState = 'WON';
+          io.to(roomId).emit('game_over', { winner: 'p1', reason: p1Win.reason });
+      } else if (p2Win) {
+          room.gameState = 'WON';
+          io.to(roomId).emit('game_over', { winner: 'p2', reason: p2Win.reason });
       }
   });
 
