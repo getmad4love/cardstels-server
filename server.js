@@ -42,6 +42,9 @@ const checkWinCondition = (myStats, opStats, myName, opName) => {
     return null;
 };
 
+// Helper to calculate total HP (Wall + Tower + King)
+const getTotalHP = (stats) => (stats.wall || 0) + (stats.tower || 0) + (stats.king || 0);
+
 io.on('connection', (socket) => {
   console.log(`[SOCKET] User connected: ${socket.id}`);
 
@@ -219,6 +222,12 @@ io.on('connection', (socket) => {
       }
       
       io.to(roomId).emit('rematch_update', { p1: room.rematchP1 || false, p2: room.rematchP2 || false });
+
+      // If both accepted, trigger the Host (P1) to restart the game
+      if (room.rematchP1 && room.rematchP2) {
+          // Tell clients (specifically P1) to run initGame()
+          io.to(roomId).emit('start_rematch');
+      }
   });
 
   socket.on('leave_room', ({ roomId }) => {
@@ -415,6 +424,14 @@ io.on('connection', (socket) => {
       io.to(roomId).emit('king_power_triggered', { p1Card, p2Card });
   });
 
+  const calculateBuildStats = (oldStats, newStats) => {
+      let built = 0;
+      if (newStats.wall > oldStats.wall) built += (newStats.wall - oldStats.wall);
+      if (newStats.tower > oldStats.tower) built += (newStats.tower - oldStats.tower);
+      if (newStats.king > oldStats.king) built += (newStats.king - oldStats.king);
+      return built;
+  };
+
   socket.on('game_action', ({ roomId, action, payload }) => {
       const room = rooms[roomId];
       if (!room) return;
@@ -427,8 +444,13 @@ io.on('connection', (socket) => {
           // --- STATS TRACKING ---
           if (action === 'PLAY_CARD') {
               room.gameStats[statsKey].cardsUsed++;
-              // Estimate damage done for stats
+              
               if (isP1) {
+                  // P1 BUILT
+                  const p1Built = calculateBuildStats(room.p1Stats, payload.newP1Stats);
+                  if (p1Built > 0) room.gameStats.p1.built += p1Built;
+
+                  // P1 DAMAGE DEALT (P2 DAMAGE TAKEN)
                   const dKing = room.p2Stats.king - payload.newP2Stats.king;
                   const dTower = room.p2Stats.tower - payload.newP2Stats.tower;
                   const dWall = room.p2Stats.wall - payload.newP2Stats.wall;
@@ -437,9 +459,15 @@ io.on('connection', (socket) => {
                       room.gameStats.p1.dmg += totalDmg;
                       room.gameStats.p2.taken += totalDmg;
                   }
+                  
                   const cost = (room.p1Stats.bricks - payload.newP1Stats.bricks) + (room.p1Stats.weapons - payload.newP1Stats.weapons) + (room.p1Stats.crystals - payload.newP1Stats.crystals);
                   if (cost > 0) room.gameStats.p1.totalCost += cost;
               } else {
+                  // P2 BUILT
+                  const p2Built = calculateBuildStats(room.p2Stats, payload.newP2Stats);
+                  if (p2Built > 0) room.gameStats.p2.built += p2Built;
+
+                  // P2 DAMAGE DEALT (P1 DAMAGE TAKEN)
                   const dKing = room.p1Stats.king - payload.newP1Stats.king;
                   const dTower = room.p1Stats.tower - payload.newP1Stats.tower;
                   const dWall = room.p1Stats.wall - payload.newP1Stats.wall;
@@ -448,6 +476,7 @@ io.on('connection', (socket) => {
                       room.gameStats.p2.dmg += totalDmg;
                       room.gameStats.p1.taken += totalDmg;
                   }
+                  
                   const cost = (room.p2Stats.bricks - payload.newP2Stats.bricks) + (room.p2Stats.weapons - payload.newP2Stats.weapons) + (room.p2Stats.crystals - payload.newP2Stats.crystals);
                   if (cost > 0) room.gameStats.p2.totalCost += cost;
               }
@@ -456,8 +485,6 @@ io.on('connection', (socket) => {
           }
 
           // SERVER SAFEGUARD: Prevent client from overwriting madnessActive state due to race conditions
-          // If the server thinks madness is FALSE (consumed by draw), but client thinks TRUE (lag),
-          // playing a normal card would send TRUE back to server. We must prevent this overwrite.
           const wasMadnessP1 = room.p1Stats.madnessActive;
           const wasMadnessP2 = room.p2Stats.madnessActive;
           const isMadnessCard = payload.card.name === 'MADNESS' || payload.card.id === 107;
@@ -465,7 +492,6 @@ io.on('connection', (socket) => {
           room.p1Stats = payload.newP1Stats;
           room.p2Stats = payload.newP2Stats;
           
-          // Force server state back if card played wasn't Madness itself
           if (!isMadnessCard) {
               if (isP1) room.p1Stats.madnessActive = wasMadnessP1;
               else room.p2Stats.madnessActive = wasMadnessP2;
@@ -474,9 +500,6 @@ io.on('connection', (socket) => {
           if (isP1) room.p1Hand = room.p1Hand.filter(c => c.uniqueId !== payload.card.uniqueId);
           else room.p2Hand = room.p2Hand.filter(c => c.uniqueId !== payload.card.uniqueId);
           
-          // ** RECYCLING LOGIC (UPDATED) **
-          // Cards go to Discard Pile, EXCEPT King Power (ID 42) which is burned.
-          // Type 4 Specials should be recycled.
           if (String(payload.card.id) !== '42' && payload.card.id !== 42) {
               room.discardPile.push({ ...payload.card, uniqueId: Math.random().toString() });
           }
@@ -495,17 +518,23 @@ io.on('connection', (socket) => {
       }
 
       if (action === 'END_TURN') {
-          // Check for damage in end turn (Archer, Burn, etc)
           const p1Prev = room.p1Stats; const p2Prev = room.p2Stats;
           
-          // SERVER SAFEGUARD FOR END TURN AS WELL
           const wasMadnessP1 = room.p1Stats.madnessActive;
           const wasMadnessP2 = room.p2Stats.madnessActive;
+
+          // CALCULATE BUILD STATS FOR END TURN (e.g. Bob, production doesn't count as 'built' usually, but HP does)
+          if (isP1) {
+              const p1Built = calculateBuildStats(p1Prev, payload.newP1Stats);
+              if (p1Built > 0) room.gameStats.p1.built += p1Built;
+          } else {
+              const p2Built = calculateBuildStats(p2Prev, payload.newP2Stats);
+              if (p2Built > 0) room.gameStats.p2.built += p2Built;
+          }
 
           room.p1Stats = payload.newP1Stats;
           room.p2Stats = payload.newP2Stats;
           
-          // Madness cannot be activated during End Turn, so always preserve server state
           room.p1Stats.madnessActive = wasMadnessP1;
           room.p2Stats.madnessActive = wasMadnessP2;
           
