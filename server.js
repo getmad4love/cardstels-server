@@ -99,7 +99,7 @@ io.on('connection', (socket) => {
       p2: null,
       gameState: 'LOBBY', 
       mainDeck: [],
-      // No Discard Pile needed for recycling logic
+      // discardPile: [], // Removed: Cards recycle immediately
       kingDeck: [],
       p1Hand: [],
       p2Hand: [],
@@ -201,6 +201,7 @@ io.on('connection', (socket) => {
 
       room.gameState = 'KING_SELECTION';
       room.mainDeck = shuffle([...mainDeck]);
+      // room.discardPile = []; // Removed
       room.kingDeck = shuffle([...kingDeck]);
       room.p1Stats = { ...initialStats };
       room.p2Stats = { ...initialStats };
@@ -397,11 +398,10 @@ io.on('connection', (socket) => {
       
       const isP1 = room.p1.id === socket.id;
       
-      // AUTO-RECYCLE DECK (Infinite Deck Logic)
+      // DECK EMPTY CHECK & RESHUFFLE - NOT NEEDED AS WE RECYCLE IMMEDIATELY
+      // But purely as a safeguard if mainDeck gets empty somehow
       if (room.mainDeck.length === 0) {
-          // Deck empty? No problem, it technically shouldn't happen with instant recycling, 
-          // but if it does, we can emit an error or handle it.
-          // Since cards are recycled on play/discard, deck should persist.
+          // Fallback or Error
           return;
       }
 
@@ -497,7 +497,6 @@ io.on('connection', (socket) => {
                           room.gameStats.p1.dmg += totalDmg;
                           room.gameStats.p2.taken += totalDmg;
                       }
-                      
                       const cost = (prevP1.bricks - newP1.bricks) + (prevP1.weapons - newP1.weapons) + (prevP1.crystals - newP1.crystals);
                       if (cost > 0) room.gameStats.p1.totalCost += cost;
                   } else {
@@ -512,7 +511,6 @@ io.on('connection', (socket) => {
                           room.gameStats.p2.dmg += totalDmg;
                           room.gameStats.p1.taken += totalDmg;
                       }
-                      
                       const cost = (prevP2.bricks - newP2.bricks) + (prevP2.weapons - newP2.weapons) + (prevP2.crystals - newP2.crystals);
                       if (cost > 0) room.gameStats.p2.totalCost += cost;
                   }
@@ -528,18 +526,21 @@ io.on('connection', (socket) => {
               room.p2Stats = payload.newP2Stats;
               
               if (!isMadnessCard) {
-                  if (room.p1Stats) { if (isP1) room.p1Stats.madnessActive = wasMadnessP1; }
-                  if (room.p2Stats) { if (!isP1) room.p2Stats.madnessActive = wasMadnessP2; }
+                  if (room.p1Stats) {
+                      if (isP1) room.p1Stats.madnessActive = wasMadnessP1;
+                  }
+                  if (room.p2Stats) {
+                      if (!isP1) room.p2Stats.madnessActive = wasMadnessP2;
+                  }
               }
               
               if (isP1) room.p1Hand = room.p1Hand.filter(c => c.uniqueId !== payload.card.uniqueId);
               else room.p2Hand = room.p2Hand.filter(c => c.uniqueId !== payload.card.uniqueId);
               
-              // RECYCLING LOGIC: Immediate push to Main Deck bottom
+              // RECYCLE LOGIC: Card goes to bottom of mainDeck immediately
               if (String(payload.card.id) !== '42' && payload.card.id !== 42) {
                   const recycledCard = { ...payload.card, uniqueId: Math.random().toString(36).substr(2, 9) };
                   room.mainDeck.push(recycledCard);
-                  io.to(roomId).emit('deck_count_update', room.mainDeck.length);
               }
 
               io.to(roomId).emit('state_sync', {
