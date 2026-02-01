@@ -398,10 +398,17 @@ io.on('connection', (socket) => {
       
       const isP1 = room.p1.id === socket.id;
       
-      if (room.mainDeck.length === 0 && room.discardPile.length > 0) {
-          room.mainDeck = shuffle(room.discardPile);
-          room.discardPile = [];
-          io.to(roomId).emit('deck_count_update', room.mainDeck.length);
+      // DECK EMPTY CHECK & RESHUFFLE
+      if (room.mainDeck.length === 0) {
+          if (room.discardPile.length > 0) {
+              room.mainDeck = shuffle(room.discardPile);
+              room.discardPile = [];
+              io.to(roomId).emit('deck_reshuffled', { deckCount: room.mainDeck.length });
+              io.to(roomId).emit('deck_count_update', room.mainDeck.length);
+          } else {
+              // No cards left anywhere - return without drawing
+              return;
+          }
       }
 
       let newCard = null;
