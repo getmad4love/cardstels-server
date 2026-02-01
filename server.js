@@ -83,6 +83,7 @@ io.on('connection', (socket) => {
              p1Stats: room.p1Stats, p2Stats: room.p2Stats,
              turn: room.turn,
              deckCount: room.mainDeck.length,
+             discardCount: room.discardPile.length,
              p1KingCards: room.p1KingCards,
              p2KingCards: room.p2KingCards,
              gameStats: room.gameStats
@@ -139,6 +140,7 @@ io.on('connection', (socket) => {
                 p1Stats: room.p1Stats, p2Stats: room.p2Stats,
                 turn: room.turn,
                 deckCount: room.mainDeck.length,
+                discardCount: room.discardPile.length,
                 p1KingCards: room.p1KingCards,
                 p2KingCards: room.p2KingCards,
                 gameStats: room.gameStats
@@ -329,7 +331,7 @@ io.on('connection', (socket) => {
           if(card.id === 'k_big') room.p1Stats.king = 60;
           if(card.id === 'k_son') { room.p1Stats.wall = 40; room.p1Stats.tower = 20; room.p1Stats.king = 10; }
           if(card.id === 'k_bunk') { room.p1Stats.wall = 60; room.p1Stats.tower = 10; room.p1Stats.king = 1; }
-         // if(card.id === 'k_hoard') { room.p1Stats.bricks += 30; room.p1Stats.weapons += 30; room.p1Stats.crystals += 30; }
+          if(card.id === 'k_hoard') { room.p1Stats.bricks += 30; room.p1Stats.weapons += 30; room.p1Stats.crystals += 30; }
           if(card.id === 'k_ind') { room.p1Stats.prodBricks++; room.p1Stats.prodWeapons++; room.p1Stats.prodCrystals++; room.p1Stats.bricks=10; room.p1Stats.weapons=10; room.p1Stats.crystals=10; }
 
           room.kingDeck = room.kingDeck.filter(c => !room.kingSelection.availableOptions.find(o => o.id === c.id));
@@ -401,6 +403,7 @@ io.on('connection', (socket) => {
       if (room.mainDeck.length === 0 && room.discardPile.length > 0) {
           room.mainDeck = shuffle(room.discardPile);
           room.discardPile = [];
+          io.to(roomId).emit('deck_reshuffled', { deckCount: room.mainDeck.length });
           io.to(roomId).emit('deck_count_update', room.mainDeck.length);
       }
 
@@ -438,6 +441,7 @@ io.on('connection', (socket) => {
                   p2Stats: room.p2Stats,
                   turn: room.turn,
                   deckCount: room.mainDeck.length,
+                  discardCount: room.discardPile.length,
                   gameStats: room.gameStats
               });
           }
@@ -564,6 +568,7 @@ io.on('connection', (socket) => {
                   p2Stats: room.p2Stats,
                   turn: room.turn,
                   deckCount: room.mainDeck.length,
+                  discardCount: room.discardPile.length,
                   event: { type: action, cardId: payload.card.id, player: playerRole, cardDesc: payload.card.desc, cardType: payload.card.type },
                   logs: payload.logs,
                   p1KingCards: room.p1KingCards, 
@@ -612,6 +617,7 @@ io.on('connection', (socket) => {
                   turn: room.turn,
                   turnCounts: room.turnCounts, 
                   deckCount: room.mainDeck.length,
+                  discardCount: room.discardPile.length,
                   event: { type: 'END_TURN', player: playerRole },
                   logs: payload.logs,
                   p1KingCards: room.p1KingCards,
