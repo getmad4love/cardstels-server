@@ -99,7 +99,7 @@ io.on('connection', (socket) => {
       p2: null,
       gameState: 'LOBBY', 
       mainDeck: [],
-      discardPile: [],
+      // No Discard Pile needed for recycling logic
       kingDeck: [],
       p1Hand: [],
       p2Hand: [],
@@ -201,7 +201,6 @@ io.on('connection', (socket) => {
 
       room.gameState = 'KING_SELECTION';
       room.mainDeck = shuffle([...mainDeck]);
-      room.discardPile = [];
       room.kingDeck = shuffle([...kingDeck]);
       room.p1Stats = { ...initialStats };
       room.p2Stats = { ...initialStats };
@@ -398,17 +397,12 @@ io.on('connection', (socket) => {
       
       const isP1 = room.p1.id === socket.id;
       
-      // DECK EMPTY CHECK & RESHUFFLE
+      // AUTO-RECYCLE DECK (Infinite Deck Logic)
       if (room.mainDeck.length === 0) {
-          if (room.discardPile.length > 0) {
-              room.mainDeck = shuffle(room.discardPile);
-              room.discardPile = [];
-              io.to(roomId).emit('deck_reshuffled', { deckCount: room.mainDeck.length });
-              io.to(roomId).emit('deck_count_update', room.mainDeck.length);
-          } else {
-              // No cards left anywhere - return without drawing
-              return;
-          }
+          // Deck empty? No problem, it technically shouldn't happen with instant recycling, 
+          // but if it does, we can emit an error or handle it.
+          // Since cards are recycled on play/discard, deck should persist.
+          return;
       }
 
       let newCard = null;
@@ -451,41 +445,26 @@ io.on('connection', (socket) => {
       }
   });
 
-  // --- REPLACED: Server-side King Card selection logic ---
   socket.on('activate_king_power', ({ roomId, triggerPlayer }) => {
       const room = rooms[roomId];
       if (!room) return;
       
-      // 1. Get IDs of all currently owned King Cards to prevent duplicates
       const ownedIds = new Set([
           ...room.p1KingCards.map(c => c.id),
           ...room.p2KingCards.map(c => c.id)
       ]);
 
-      // 2. Filter the Deck: Remove any cards that are already owned
-      // This safeguards against cases where the deck wasn't perfectly cleaned up before
       room.kingDeck = room.kingDeck.filter(c => !ownedIds.has(c.id));
-
-      // 3. Shuffle the deck
       room.kingDeck = shuffle(room.kingDeck);
 
-      // 4. Ensure we have enough cards
-      if (room.kingDeck.length < 2) {
-          // Edge case: Not enough cards. In a real game, maybe recycle or do nothing.
-          // For now, we simply return, effectively fizzling the effect if deck is empty.
-          return;
-      }
+      if (room.kingDeck.length < 2) return;
 
-      // 5. Draw 2 cards
       const p1Card = room.kingDeck.shift();
       const p2Card = room.kingDeck.shift();
 
-      // 6. Assign to players
       room.p1KingCards.push(p1Card);
       room.p2KingCards.push(p2Card);
       
-      // 7. Broadcast the result to clients so they can animate
-      // Pass firstDrawer as the player who triggered the event
       io.to(roomId).emit('king_power_triggered', { p1Card, p2Card, firstDrawer: triggerPlayer });
   });
 
@@ -501,8 +480,6 @@ io.on('connection', (socket) => {
           if (action === 'PLAY_CARD' || action === 'DISCARD_CARD') {
               if (action === 'PLAY_CARD') {
                   room.gameStats[statsKey].cardsUsed++;
-                  
-                  // Ensure stats exist before accessing
                   const prevP1 = room.p1Stats || initialGameStats;
                   const prevP2 = room.p2Stats || initialGameStats;
                   const newP1 = payload.newP1Stats || prevP1;
@@ -551,19 +528,18 @@ io.on('connection', (socket) => {
               room.p2Stats = payload.newP2Stats;
               
               if (!isMadnessCard) {
-                  if (room.p1Stats) {
-                      if (isP1) room.p1Stats.madnessActive = wasMadnessP1;
-                  }
-                  if (room.p2Stats) {
-                      if (!isP1) room.p2Stats.madnessActive = wasMadnessP2;
-                  }
+                  if (room.p1Stats) { if (isP1) room.p1Stats.madnessActive = wasMadnessP1; }
+                  if (room.p2Stats) { if (!isP1) room.p2Stats.madnessActive = wasMadnessP2; }
               }
               
               if (isP1) room.p1Hand = room.p1Hand.filter(c => c.uniqueId !== payload.card.uniqueId);
               else room.p2Hand = room.p2Hand.filter(c => c.uniqueId !== payload.card.uniqueId);
               
+              // RECYCLING LOGIC: Immediate push to Main Deck bottom
               if (String(payload.card.id) !== '42' && payload.card.id !== 42) {
-                  room.discardPile.push({ ...payload.card, uniqueId: Math.random().toString() });
+                  const recycledCard = { ...payload.card, uniqueId: Math.random().toString(36).substr(2, 9) };
+                  room.mainDeck.push(recycledCard);
+                  io.to(roomId).emit('deck_count_update', room.mainDeck.length);
               }
 
               io.to(roomId).emit('state_sync', {
