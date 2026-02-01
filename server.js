@@ -399,9 +399,7 @@ io.on('connection', (socket) => {
       const isP1 = room.p1.id === socket.id;
       
       // DECK EMPTY CHECK & RESHUFFLE - NOT NEEDED AS WE RECYCLE IMMEDIATELY
-      // But purely as a safeguard if mainDeck gets empty somehow
       if (room.mainDeck.length === 0) {
-          // Fallback or Error
           return;
       }
 
@@ -429,6 +427,14 @@ io.on('connection', (socket) => {
               room.p2Hand.push(newCard);
           }
           
+          if (newCard.id === 42 || String(newCard.id) === '42') {
+                // SPECIAL BROADCAST FOR KING POWER FOUND
+                io.to(roomId).emit('king_power_found_broadcast', { 
+                    player: isP1 ? 'p1' : 'p2',
+                    card: newCard
+                });
+          }
+
           socket.emit('card_drawn', { card: newCard });
           socket.broadcast.to(roomId).emit('opponent_drew_card');
           io.to(roomId).emit('deck_count_update', room.mainDeck.length);
