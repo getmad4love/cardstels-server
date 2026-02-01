@@ -83,7 +83,6 @@ io.on('connection', (socket) => {
              p1Stats: room.p1Stats, p2Stats: room.p2Stats,
              turn: room.turn,
              deckCount: room.mainDeck.length,
-             discardCount: room.discardPile.length,
              p1KingCards: room.p1KingCards,
              p2KingCards: room.p2KingCards,
              gameStats: room.gameStats
@@ -140,7 +139,6 @@ io.on('connection', (socket) => {
                 p1Stats: room.p1Stats, p2Stats: room.p2Stats,
                 turn: room.turn,
                 deckCount: room.mainDeck.length,
-                discardCount: room.discardPile.length,
                 p1KingCards: room.p1KingCards,
                 p2KingCards: room.p2KingCards,
                 gameStats: room.gameStats
@@ -403,7 +401,6 @@ io.on('connection', (socket) => {
       if (room.mainDeck.length === 0 && room.discardPile.length > 0) {
           room.mainDeck = shuffle(room.discardPile);
           room.discardPile = [];
-          io.to(roomId).emit('deck_reshuffled', { deckCount: room.mainDeck.length });
           io.to(roomId).emit('deck_count_update', room.mainDeck.length);
       }
 
@@ -441,7 +438,6 @@ io.on('connection', (socket) => {
                   p2Stats: room.p2Stats,
                   turn: room.turn,
                   deckCount: room.mainDeck.length,
-                  discardCount: room.discardPile.length,
                   gameStats: room.gameStats
               });
           }
@@ -568,7 +564,6 @@ io.on('connection', (socket) => {
                   p2Stats: room.p2Stats,
                   turn: room.turn,
                   deckCount: room.mainDeck.length,
-                  discardCount: room.discardPile.length,
                   event: { type: action, cardId: payload.card.id, player: playerRole, cardDesc: payload.card.desc, cardType: payload.card.type },
                   logs: payload.logs,
                   p1KingCards: room.p1KingCards, 
@@ -617,7 +612,6 @@ io.on('connection', (socket) => {
                   turn: room.turn,
                   turnCounts: room.turnCounts, 
                   deckCount: room.mainDeck.length,
-                  discardCount: room.discardPile.length,
                   event: { type: 'END_TURN', player: playerRole },
                   logs: payload.logs,
                   p1KingCards: room.p1KingCards,
