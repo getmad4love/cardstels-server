@@ -48,14 +48,12 @@ const calculateDamage = (target, dmg) => {
     if (!target) return target;
     let newTarget = { ...target };
     
-    // Shield Logic
+    // Shield Logic (Robust)
+    // If shield exists, it absorbs damage up to its value.
     if (newTarget.shield > 0) {
         const damageToShield = Math.min(newTarget.shield, dmg);
         newTarget.shield -= damageToShield;
-        // Shield absorbs damage, remainder is lost (standard mechanic) or passes through? 
-        // Standard Cardstels mechanic: Shield absorbs ALL damage of the instance if shield > 0
-        // But if shield breaks, usually overflow is ignored in simple logic, 
-        // or we can implement bleed through. For now, strict absorption.
+        // In current game rules, shield absorbs the full hit instance even if it breaks.
         return newTarget;
     }
 
@@ -530,8 +528,8 @@ io.on('connection', (socket) => {
           const playerRole = isP1 ? 'p1' : 'p2';
           const statsKey = playerRole;
 
-          if (action === 'PLAY_CARD' || action === 'DISCARD_CARD' || action === 'METAMORPH_EFFECT') {
-              if (action === 'PLAY_CARD' || action === 'METAMORPH_EFFECT') {
+          if (action === 'PLAY_CARD' || action === 'DISCARD_CARD') {
+              if (action === 'PLAY_CARD') {
                   room.gameStats[statsKey].cardsUsed++;
                   const prevP1 = room.p1Stats || initialGameStats;
                   const prevP2 = room.p2Stats || initialGameStats;
@@ -573,15 +571,12 @@ io.on('connection', (socket) => {
 
               const wasMadnessP1 = room.p1Stats ? room.p1Stats.madnessActive : false;
               const wasMadnessP2 = room.p2Stats ? room.p2Stats.madnessActive : false;
-              
-              // Only regular plays consume madness, Metamorph (type 4 special behavior) might, but usually specials don't.
-              // However, if we pay cost, we might consume it. For simplicity, assume Metamorph behaves like normal play regarding madness if cost > 0.
               const isMadnessCard = payload.card.name === 'MADNESS' || payload.card.id === 107;
 
               room.p1Stats = payload.newP1Stats;
               room.p2Stats = payload.newP2Stats;
               
-              if (!isMadnessCard && action !== 'METAMORPH_EFFECT') {
+              if (!isMadnessCard) {
                   if (room.p1Stats) {
                       if (isP1) room.p1Stats.madnessActive = wasMadnessP1;
                   }
@@ -590,21 +585,10 @@ io.on('connection', (socket) => {
                   }
               }
               
-              // HAND MANAGEMENT
-              if (action === 'METAMORPH_EFFECT') {
-                  // Replace the card in hand instead of removing it
-                  const targetHand = isP1 ? room.p1Hand : room.p2Hand;
-                  const cardIndex = targetHand.findIndex(c => c.uniqueId === payload.card.uniqueId);
-                  if (cardIndex !== -1) {
-                      targetHand[cardIndex] = payload.newCard;
-                  }
-              } else {
-                  // Normal Play/Discard: Remove card
-                  if (isP1) room.p1Hand = room.p1Hand.filter(c => c.uniqueId !== payload.card.uniqueId);
-                  else room.p2Hand = room.p2Hand.filter(c => c.uniqueId !== payload.card.uniqueId);
-              }
+              if (isP1) room.p1Hand = room.p1Hand.filter(c => c.uniqueId !== payload.card.uniqueId);
+              else room.p2Hand = room.p2Hand.filter(c => c.uniqueId !== payload.card.uniqueId);
               
-              if (String(payload.card.id) !== '42' && payload.card.id !== 42 && action !== 'METAMORPH_EFFECT') {
+              if (String(payload.card.id) !== '42' && payload.card.id !== 42) {
                   const recycledCard = { ...payload.card, uniqueId: Math.random().toString(36).substr(2, 9) };
                   room.mainDeck.push(recycledCard);
               }
