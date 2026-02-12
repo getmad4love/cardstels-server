@@ -618,13 +618,19 @@ io.on('connection', (socket) => {
               // Recalculate stats based on ARCHER SHOT if needed
               if (isP1) {
                   if (newP1.wall >= 50) {
-                      const damage = getArcherDamage(newP1.wall, room.p1KingCards);
-                      newP2 = calculateDamage(newP2, damage);
+                      // Check shield immunity - if opponent has shield, no damage
+                      if (newP2.shield <= 0) {
+                          const damage = getArcherDamage(newP1.wall, room.p1KingCards);
+                          newP2 = calculateDamage(newP2, damage);
+                      }
                   }
               } else {
                   if (newP2.wall >= 50) {
-                      const damage = getArcherDamage(newP2.wall, room.p2KingCards);
-                      newP1 = calculateDamage(newP1, damage);
+                      // Check shield immunity - if opponent has shield, no damage
+                      if (newP1.shield <= 0) {
+                          const damage = getArcherDamage(newP2.wall, room.p2KingCards);
+                          newP1 = calculateDamage(newP1, damage);
+                      }
                   }
               }
 
