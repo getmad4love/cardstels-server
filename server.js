@@ -168,7 +168,8 @@ io.on('connection', (socket) => {
              isReconnect: true,
              gameLog: room.gameLog || [], 
              restoreLocalNick: room.p1.nickname,
-             restoreLocalColor: room.p1.colorId
+             restoreLocalColor: room.p1.colorId,
+             turn: room.turn // EXPLICITLY SEND TURN
          });
          
          socket.emit('state_sync', {
@@ -253,7 +254,8 @@ io.on('connection', (socket) => {
                 isReconnect: true,
                 gameLog: room.gameLog || [],
                 restoreLocalNick: room.p2.nickname,
-                restoreLocalColor: room.p2.colorId
+                restoreLocalColor: room.p2.colorId,
+                turn: room.turn // EXPLICITLY SEND TURN
             });
 
             socket.emit('state_sync', {
@@ -624,14 +626,36 @@ io.on('connection', (socket) => {
           if (!room) return;
           room.lastActivity = Date.now();
 
+          const isP1 = room.p1 && room.p1.id === socket.id;
+          const playerRole = isP1 ? 'p1' : 'p2';
+          
+          // --- SERVER-SIDE TURN VALIDATION ---
+          // Prevents turn looping if a client gets desynced and tries to end turn twice
+          if (room.gameState === 'PLAYING' && (action === 'PLAY_CARD' || action === 'DISCARD_CARD' || action === 'END_TURN')) {
+              if (room.turn !== playerRole) {
+                  console.warn(`[GAME_ACTION] Rejected ${action} from ${playerRole}. It is ${room.turn}'s turn.`);
+                  
+                  // Force sync the lagging client to the correct state
+                  socket.emit('state_sync', {
+                      p1Stats: room.p1Stats,
+                      p2Stats: room.p2Stats,
+                      turn: room.turn,
+                      turnCounts: room.turnCounts,
+                      deckCount: room.mainDeck.length,
+                      p1KingCards: room.p1KingCards,
+                      p2KingCards: room.p2KingCards,
+                      gameStats: room.gameStats
+                  });
+                  return;
+              }
+          }
+
           if (payload.logs && Array.isArray(payload.logs)) {
               if (!room.gameLog) room.gameLog = [];
               room.gameLog.push(...payload.logs);
               if (room.gameLog.length > 200) room.gameLog = room.gameLog.slice(-100);
           }
 
-          const isP1 = room.p1 && room.p1.id === socket.id;
-          const playerRole = isP1 ? 'p1' : 'p2';
           const statsKey = playerRole;
 
           if (action === 'PLAY_CARD' || action === 'DISCARD_CARD' || action === 'METAMORPH_EFFECT') {
