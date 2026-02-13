@@ -140,10 +140,9 @@ io.on('connection', (socket) => {
       
       // Re-bind host to this socket
       room.p1.id = socket.id;
-      // Optionally update details if provided, otherwise keep existing
-      if (nickname) room.p1.nickname = nickname;
-      if (colorId !== undefined) room.p1.colorId = colorId;
-      room.p1.connected = true; // Mark as connected
+      // IMPORTANT: Do NOT overwrite nickname/color with default/empty values if the game is already in progress.
+      // The server is the source of truth for the ongoing game identity.
+      room.p1.connected = true; 
       
       room.lastActivity = Date.now();
       
@@ -161,16 +160,19 @@ io.on('connection', (socket) => {
              p1Stats: room.p1Stats,
              p2Stats: room.p2Stats,
              p1Hand: myHand,
-             p2Hand: room.p2Hand || [], // Send P2 hand length reference primarily
+             p2Hand: room.p2Hand || [], 
              deckCount: room.mainDeck.length,
              p1Nickname: room.p1.nickname,
              p2Nickname: room.p2 ? room.p2.nickname : "PLAYER 2",
              p1Kings: room.p1KingCards,
              p2Kings: room.p2KingCards,
-             isReconnect: true // Flag to skip animations
+             isReconnect: true,
+             gameLog: room.gameLog || [], // Send full log history
+             // Send back the SERVER'S stored identity so client can update local state
+             restoreLocalNick: room.p1.nickname,
+             restoreLocalColor: room.p1.colorId
          });
          
-         // Force a state sync as well to ensure turn pointers are correct
          socket.emit('state_sync', {
              p1Stats: room.p1Stats,
              p2Stats: room.p2Stats,
@@ -193,6 +195,7 @@ io.on('connection', (socket) => {
       p1: { id: socket.id, nickname: nickname || 'PLAYER 1', colorId: colorId || 0, isReady: false, role: 'p1', connected: true },
       p2: null,
       gameState: 'LOBBY', 
+      gameLog: [], // Initialize Log History
       mainDeck: [],
       kingDeck: [],
       p1Hand: [],
@@ -228,8 +231,7 @@ io.on('connection', (socket) => {
     if (room.p2) {
         console.log(`[LOBBY] Room ${roomId} has P2. Attempting reconnection.`);
         room.p2.id = socket.id;
-        if (nickname) room.p2.nickname = nickname;
-        if (colorId !== undefined) room.p2.colorId = colorId;
+        // Do NOT overwrite nickname/color on reconnect
         room.p2.connected = true;
 
         socket.join(roomId);
@@ -249,7 +251,10 @@ io.on('connection', (socket) => {
                 p2Nickname: room.p2.nickname,
                 p1Kings: room.p1KingCards,
                 p2Kings: room.p2KingCards,
-                isReconnect: true
+                isReconnect: true,
+                gameLog: room.gameLog || [],
+                restoreLocalNick: room.p2.nickname,
+                restoreLocalColor: room.p2.colorId
             });
 
             socket.emit('state_sync', {
@@ -312,7 +317,34 @@ io.on('connection', (socket) => {
       room.lastActivity = Date.now();
       let sender = (room.p1 && room.p1.id === socket.id) ? room.p1 : (room.p2 && room.p2.id === socket.id ? room.p2 : null);
       if (sender) {
-          io.to(roomId).emit('chat_message', { text: message.substring(0, 32), senderName: sender.nickname, colorId: sender.colorId, context: 'GAME' });
+          // Store chat in game log
+          if (!room.gameLog) room.gameLog = [];
+          const logEntry = { 
+              text: message.substring(0, 32), 
+              senderName: sender.nickname, 
+              colorId: sender.colorId, 
+              context: 'GAME',
+              type: 'CHAT'
+          };
+          // Construct HTML for storage consistency with other logs
+          // Note: In a real app we might store raw data and format on client, but here we match existing flow
+          // Actually, let's store structured data where possible, but for simplicity we assume the client handles the 'chat_message' event for live display,
+          // and we store a reconstruction for reconnection.
+          // BUT, to keep it simple, we will just replicate the 'chat_message' event structure in the log 
+          // and let the client re-process it, OR we store the processed log line.
+          // Let's store the raw object needed to reconstruct the log line.
+          
+          const commonEmojis = ["⚔️", "🧱", "💎", "🏰", "👑"];
+          const isEmoji = /^\p{Extended_Pictographic}+$/u.test(logEntry.text.trim()) || commonEmojis.includes(logEntry.text.trim());
+          const textClass = isEmoji ? 'text-4xl' : 'text-white font-bold text-[16px]';
+          // We need to look up color class on server or send code. Sending code is better.
+          // We'll store a "rehydratable" log object.
+          room.gameLog.push({
+              rawChat: logEntry, // Marker to tell client to format this as chat
+              timestamp: Date.now()
+          });
+          
+          io.to(roomId).emit('chat_message', logEntry);
       }
   });
 
@@ -324,6 +356,7 @@ io.on('connection', (socket) => {
       room.lastActivity = Date.now();
 
       room.gameState = 'KING_SELECTION';
+      room.gameLog = []; // Clear log on new game
       room.mainDeck = shuffle([...mainDeck]);
       room.kingDeck = shuffle([...kingDeck]);
       room.p1Stats = { ...initialStats };
@@ -368,6 +401,7 @@ io.on('connection', (socket) => {
 
       if (room.rematchP1 && room.rematchP2) {
           room.gameState = 'LOBBY';
+          room.gameLog = [];
           room.p1.isReady = false;
           if (room.p2) room.p2.isReady = false;
           room.rematchP1 = false;
@@ -390,6 +424,8 @@ io.on('connection', (socket) => {
       }
   });
 
+  // ... (leave_room, shuffle_king_deck, select_king_card, draw_card_req, activate_king_power unchanged) ...
+  
   socket.on('leave_room', ({ roomId }) => {
       const room = rooms[roomId];
       if (!room) return;
@@ -604,6 +640,14 @@ io.on('connection', (socket) => {
           const room = rooms[roomId];
           if (!room) return;
           room.lastActivity = Date.now();
+
+          // Store logs history
+          if (payload.logs && Array.isArray(payload.logs)) {
+              if (!room.gameLog) room.gameLog = [];
+              room.gameLog.push(...payload.logs);
+              // Maintain max log size to prevent memory explosion
+              if (room.gameLog.length > 200) room.gameLog = room.gameLog.slice(-100);
+          }
 
           const isP1 = room.p1 && room.p1.id === socket.id;
           const playerRole = isP1 ? 'p1' : 'p2';
