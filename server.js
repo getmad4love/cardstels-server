@@ -140,8 +140,6 @@ io.on('connection', (socket) => {
       
       // Re-bind host to this socket
       room.p1.id = socket.id;
-      // IMPORTANT: Do NOT overwrite nickname/color with default/empty values if the game is already in progress.
-      // The server is the source of truth for the ongoing game identity.
       room.p1.connected = true; 
       
       room.lastActivity = Date.now();
@@ -153,13 +151,14 @@ io.on('connection', (socket) => {
       // If game was already running, sync state immediately
       if (room.gameState !== 'LOBBY') {
          console.log(`[RECONNECT] Syncing state to P1 for room ${roomId}`);
-         // Send P1 their hand specifically
-         const myHand = room.p1Hand || [];
+         
+         // SANITIZE HAND: Remove any King Powers that might have slipped in due to bugs
+         const sanitizedHand = (room.p1Hand || []).filter(c => String(c.id) !== '42' && c.id !== 42);
          
          socket.emit('start_dealing_sequence', { 
              p1Stats: room.p1Stats,
              p2Stats: room.p2Stats,
-             p1Hand: myHand,
+             p1Hand: sanitizedHand,
              p2Hand: room.p2Hand || [], 
              deckCount: room.mainDeck.length,
              p1Nickname: room.p1.nickname,
@@ -167,8 +166,7 @@ io.on('connection', (socket) => {
              p1Kings: room.p1KingCards,
              p2Kings: room.p2KingCards,
              isReconnect: true,
-             gameLog: room.gameLog || [], // Send full log history
-             // Send back the SERVER'S stored identity so client can update local state
+             gameLog: room.gameLog || [], 
              restoreLocalNick: room.p1.nickname,
              restoreLocalColor: room.p1.colorId
          });
@@ -231,7 +229,6 @@ io.on('connection', (socket) => {
     if (room.p2) {
         console.log(`[LOBBY] Room ${roomId} has P2. Attempting reconnection.`);
         room.p2.id = socket.id;
-        // Do NOT overwrite nickname/color on reconnect
         room.p2.connected = true;
 
         socket.join(roomId);
@@ -239,13 +236,15 @@ io.on('connection', (socket) => {
         
         if (room.gameState !== 'LOBBY') {
             console.log(`[RECONNECT] Syncing state to P2 for room ${roomId}`);
-            const myHand = room.p2Hand || [];
+            
+            // SANITIZE HAND: Remove any King Powers
+            const sanitizedHand = (room.p2Hand || []).filter(c => String(c.id) !== '42' && c.id !== 42);
             
             socket.emit('start_dealing_sequence', { 
                 p1Stats: room.p1Stats,
                 p2Stats: room.p2Stats,
                 p1Hand: room.p1Hand || [],
-                p2Hand: myHand,
+                p2Hand: sanitizedHand,
                 deckCount: room.mainDeck.length,
                 p1Nickname: room.p1.nickname,
                 p2Nickname: room.p2.nickname,
@@ -317,7 +316,6 @@ io.on('connection', (socket) => {
       room.lastActivity = Date.now();
       let sender = (room.p1 && room.p1.id === socket.id) ? room.p1 : (room.p2 && room.p2.id === socket.id ? room.p2 : null);
       if (sender) {
-          // Store chat in game log
           if (!room.gameLog) room.gameLog = [];
           const logEntry = { 
               text: message.substring(0, 32), 
@@ -326,24 +324,10 @@ io.on('connection', (socket) => {
               context: 'GAME',
               type: 'CHAT'
           };
-          // Construct HTML for storage consistency with other logs
-          // Note: In a real app we might store raw data and format on client, but here we match existing flow
-          // Actually, let's store structured data where possible, but for simplicity we assume the client handles the 'chat_message' event for live display,
-          // and we store a reconstruction for reconnection.
-          // BUT, to keep it simple, we will just replicate the 'chat_message' event structure in the log 
-          // and let the client re-process it, OR we store the processed log line.
-          // Let's store the raw object needed to reconstruct the log line.
-          
-          const commonEmojis = ["⚔️", "🧱", "💎", "🏰", "👑"];
-          const isEmoji = /^\p{Extended_Pictographic}+$/u.test(logEntry.text.trim()) || commonEmojis.includes(logEntry.text.trim());
-          const textClass = isEmoji ? 'text-4xl' : 'text-white font-bold text-[16px]';
-          // We need to look up color class on server or send code. Sending code is better.
-          // We'll store a "rehydratable" log object.
           room.gameLog.push({
-              rawChat: logEntry, // Marker to tell client to format this as chat
+              rawChat: logEntry,
               timestamp: Date.now()
           });
-          
           io.to(roomId).emit('chat_message', logEntry);
       }
   });
@@ -356,7 +340,7 @@ io.on('connection', (socket) => {
       room.lastActivity = Date.now();
 
       room.gameState = 'KING_SELECTION';
-      room.gameLog = []; // Clear log on new game
+      room.gameLog = []; 
       room.mainDeck = shuffle([...mainDeck]);
       room.kingDeck = shuffle([...kingDeck]);
       room.p1Stats = { ...initialStats };
@@ -424,8 +408,6 @@ io.on('connection', (socket) => {
       }
   });
 
-  // ... (leave_room, shuffle_king_deck, select_king_card, draw_card_req, activate_king_power unchanged) ...
-  
   socket.on('leave_room', ({ roomId }) => {
       const room = rooms[roomId];
       if (!room) return;
@@ -565,6 +547,15 @@ io.on('connection', (socket) => {
       if (room.mainDeck.length > 0) {
           newCard = room.mainDeck.shift();
           
+          // King Power Logic - Do NOT add to hand!
+          if (newCard.id === 42 || String(newCard.id) === '42') {
+                io.to(roomId).emit('king_power_found_broadcast', { 
+                    player: isP1 ? 'p1' : 'p2',
+                    card: newCard
+                });
+                return; // Stop execution, don't emit card_drawn
+          }
+
           const hasCost = (Number(newCard.costB) || 0) > 0 || (Number(newCard.costW) || 0) > 0 || (Number(newCard.costC) || 0) > 0;
           const cardType = Number(newCard.type);
 
@@ -583,13 +574,6 @@ io.on('connection', (socket) => {
                   isMadnessDraw = true;
               }
               room.p2Hand.push(newCard);
-          }
-          
-          if (newCard.id === 42 || String(newCard.id) === '42') {
-                io.to(roomId).emit('king_power_found_broadcast', { 
-                    player: isP1 ? 'p1' : 'p2',
-                    card: newCard
-                });
           }
 
           socket.emit('card_drawn', { card: newCard });
@@ -620,7 +604,6 @@ io.on('connection', (socket) => {
 
       const starterIds = ['k_big', 'k_son', 'k_hoard', 'k_ind', 'k_bunk'];
       
-      // Filter out starters and owned cards for mid-game loot
       room.kingDeck = room.kingDeck.filter(c => !ownedIds.has(c.id) && !starterIds.includes(c.id));
       room.kingDeck = shuffle(room.kingDeck);
 
@@ -641,11 +624,9 @@ io.on('connection', (socket) => {
           if (!room) return;
           room.lastActivity = Date.now();
 
-          // Store logs history
           if (payload.logs && Array.isArray(payload.logs)) {
               if (!room.gameLog) room.gameLog = [];
               room.gameLog.push(...payload.logs);
-              // Maintain max log size to prevent memory explosion
               if (room.gameLog.length > 200) room.gameLog = room.gameLog.slice(-100);
           }
 
@@ -653,8 +634,8 @@ io.on('connection', (socket) => {
           const playerRole = isP1 ? 'p1' : 'p2';
           const statsKey = playerRole;
 
-          if (action === 'PLAY_CARD' || action === 'DISCARD_CARD') {
-              if (action === 'PLAY_CARD') {
+          if (action === 'PLAY_CARD' || action === 'DISCARD_CARD' || action === 'METAMORPH_EFFECT') {
+              if (action === 'PLAY_CARD' || action === 'METAMORPH_EFFECT') {
                   room.gameStats[statsKey].cardsUsed++;
                   const prevP1 = room.p1Stats || initialGameStats;
                   const prevP2 = room.p2Stats || initialGameStats;
@@ -710,10 +691,21 @@ io.on('connection', (socket) => {
                   }
               }
               
-              if (isP1) room.p1Hand = room.p1Hand.filter(c => c.uniqueId !== payload.card.uniqueId);
-              else room.p2Hand = room.p2Hand.filter(c => c.uniqueId !== payload.card.uniqueId);
+              // === HAND MODIFICATION LOGIC ===
+              if (action === 'METAMORPH_EFFECT' && payload.newCard) {
+                  // Replace card in hand with the new Gold Card
+                  if (isP1) {
+                      room.p1Hand = room.p1Hand.map(c => c.uniqueId === payload.card.uniqueId ? payload.newCard : c);
+                  } else {
+                      room.p2Hand = room.p2Hand.map(c => c.uniqueId === payload.card.uniqueId ? payload.newCard : c);
+                  }
+              } else {
+                  // Standard Removal
+                  if (isP1) room.p1Hand = room.p1Hand.filter(c => c.uniqueId !== payload.card.uniqueId);
+                  else room.p2Hand = room.p2Hand.filter(c => c.uniqueId !== payload.card.uniqueId);
+              }
               
-              if (String(payload.card.id) !== '42' && payload.card.id !== 42) {
+              if (String(payload.card.id) !== '42' && payload.card.id !== 42 && action !== 'METAMORPH_EFFECT') {
                   const recycledCard = { ...payload.card, uniqueId: Math.random().toString(36).substr(2, 9) };
                   room.mainDeck.push(recycledCard);
               }
@@ -735,15 +727,11 @@ io.on('connection', (socket) => {
               const p1Prev = room.p1Stats || initialGameStats;
               const p2Prev = room.p2Stats || initialGameStats;
               
-              // 1. Update State from Payload (Resources + Wall Building + production)
               let newP1 = payload.newP1Stats || p1Prev;
               let newP2 = payload.newP2Stats || p2Prev;
               
-              // 2. Server-side Archer Logic
-              // Recalculate stats based on ARCHER SHOT if needed
               if (isP1) {
                   if (newP1.wall >= 50) {
-                      // Check shield immunity - if opponent has shield, no damage
                       if (newP2.shield <= 0) {
                           const damage = getArcherDamage(newP1.wall, room.p1KingCards);
                           newP2 = calculateDamage(newP2, damage);
@@ -751,7 +739,6 @@ io.on('connection', (socket) => {
                   }
               } else {
                   if (newP2.wall >= 50) {
-                      // Check shield immunity - if opponent has shield, no damage
                       if (newP1.shield <= 0) {
                           const damage = getArcherDamage(newP2.wall, room.p2KingCards);
                           newP1 = calculateDamage(newP1, damage);
@@ -784,7 +771,6 @@ io.on('connection', (socket) => {
                   if (d > 0) { room.gameStats.p2.dmg += d; room.gameStats.p1.taken += d; }
               }
 
-              // CRITICAL FIX: Ensure turn swaps regardless of previous state
               room.turn = isP1 ? 'p2' : 'p1';
               if (room.turn === 'p1') room.turnCounts.p1++; else room.turnCounts.p2++;
               
@@ -802,7 +788,6 @@ io.on('connection', (socket) => {
               });
           }
 
-          // --- WIN CONDITION CHECK ---
           const p1Win = checkWinCondition(room.p1Stats, room.p2Stats, room.p1.nickname, room.p2.nickname);
           const p2Win = checkWinCondition(room.p2Stats, room.p1Stats, room.p2.nickname, room.p1.nickname);
 
@@ -815,7 +800,6 @@ io.on('connection', (socket) => {
           }
       } catch (err) {
           console.error(`[SERVER ERROR] Room: ${roomId}, Action: ${action}`, err);
-          // SAFETY: If something crashes processing, try to at least sync state to prevent lockup
           const room = rooms[roomId];
           if (room) {
               io.to(roomId).emit('state_sync', {
@@ -835,11 +819,9 @@ io.on('connection', (socket) => {
         if (room.p1 && room.p1.id === socket.id) {
             console.log(`[DISCONNECT] Host ${room.p1.nickname} disconnected from ${roomId}`);
             room.p1.connected = false;
-            // DO NOT DELETE ROOM IMMEDIATELY - allow reconnect
         } else if (room.p2 && room.p2.id === socket.id) {
             console.log(`[DISCONNECT] Guest ${room.p2.nickname} disconnected from ${roomId}`);
             room.p2.connected = false;
-            // Allow reconnect
         }
     }
   });
