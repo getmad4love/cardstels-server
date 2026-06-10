@@ -1,6 +1,6 @@
 const net = require('net');
 
-const PORT = 3000;
+const PORT = 5000;
 const rooms = {};
 
 function send(socket, msg) {
