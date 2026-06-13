@@ -191,7 +191,12 @@ const server = net.createServer((socket) => {
             if (text.length === 0) return;
             relayToOther({ type: 'chat', text: text, sender: isOwner ? 'p1' : 'p2', timestamp: Date.now() });
         }
-        else if (msg.type === 'pull' || msg.type === 'pull_end' || msg.type === 'shoot' || msg.type === 'game_sync' || msg.type === 'end_turn' || msg.type === 'typing') {
+        else if (msg.type === 'turn' || msg.type === 'game_sync' || msg.type === 'shoot' || msg.type === 'pull' || msg.type === 'pull_end' || msg.type === 'end_turn' || msg.type === 'typing') {
+            // Pure relay: the server never inspects or simulates gameplay, it just
+            // forwards small packets to the other player. 'turn' carries a whole
+            // settled turn (shot + rest snapshot); 'game_sync' carries the coin
+            // toss and end-of-match decisions. This keeps CPU at a few % even with
+            // hundreds of concurrent rooms on the Oracle free tier.
             relayToOther(msg);
         }
     }
